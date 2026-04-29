@@ -1,0 +1,57 @@
+{
+  "lexicon": 1,
+  "id": "org.consentvid.consent",
+  "defs": {
+    "main": {
+      "type": "record",
+      "description": "A consent receipt declaring permissions for AI training use of a referenced video record. Cryptographically signed by the user's repo key (inherent to ATproto records).",
+      "key": "tid",
+      "record": {
+        "type": "object",
+        "required": ["videoUri", "modalities", "purposes", "modelClasses", "compensation", "revocable", "createdAt"],
+        "properties": {
+          "videoUri": {
+            "type": "string",
+            "format": "at-uri",
+            "description": "AT-URI of the org.consentvid.video record this consent applies to."
+          },
+          "modalities": {
+            "type": "array",
+            "minLength": 1,
+            "items": {
+              "type": "string",
+              "knownValues": ["video", "audio", "transcript", "face", "voice"]
+            }
+          },
+          "purposes": {
+            "type": "array",
+            "minLength": 1,
+            "items": {
+              "type": "string",
+              "knownValues": ["training", "evaluation", "benchmarking", "researchOnly"]
+            }
+          },
+          "modelClasses": {
+            "type": "array",
+            "minLength": 1,
+            "items": {
+              "type": "string",
+              "knownValues": ["academic", "openWeights", "commercial", "foundationModel"]
+            }
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "datetime",
+            "description": "Optional expiry; after this time the consent is no longer valid."
+          },
+          "compensation": {
+            "type": "string",
+            "knownValues": ["none", "creditOnly", "monetary"]
+          },
+          "revocable": {"type": "boolean"},
+          "createdAt": {"type": "string", "format": "datetime"}
+        }
+      }
+    }
+  }
+}
