@@ -12,7 +12,8 @@ dependencies = [
 
 [project.optional-dependencies]
 r2 = ["boto3>=1.34"]
-dev = ["mlcroissant>=1.0", "boto3>=1.34"]
+c2pa = ["c2pa-python>=0.32", "cryptography>=42"]
+dev = ["mlcroissant>=1.0", "boto3>=1.34", "c2pa-python>=0.32", "cryptography>=42"]
 
 [project.scripts]
 consentvid = "consentvid.cli:main"

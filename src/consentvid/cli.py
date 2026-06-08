@@ -294,8 +294,9 @@ def list_records(collection, limit):
 def revoke(uri):
     """Delete a record by AT-URI from your repo.
 
-    Note: deleting from your repo does not remove copies already collected
-    into datasets. A revocation feed that consumers must re-sync is future work.
+    Deleting from your repo does not remove copies already collected into
+    datasets. To propagate a revocation, consumers re-sync: `consentvid resync`
+    (against a manifest) or `consentvid appview revocations` (against the index).
     """
     client = get_client()
     parts = uri.removeprefix("at://").split("/")
@@ -370,6 +371,198 @@ def export(output_path, name, description, purposes, tags):
     click.echo(f"  consents listed:  {len(consent_resp.records)}")
     click.echo(f"  videos listed:    {len(video_resp.records)}")
     click.echo(f"  consents matched: {matched} (after filters)")
+
+
+def _fetch_record(client, uri):
+    """Fetch a single record by AT-URI; return (did, value_dict). Raises ClickException
+    if the URI is malformed or the record is missing (revoked)."""
+    from consentvid.resync import parse_at_uri
+
+    try:
+        did, collection, rkey = parse_at_uri(uri)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    try:
+        resp = client.com.atproto.repo.get_record(
+            {"repo": did, "collection": collection, "rkey": rkey}
+        )
+    except Exception as e:  # noqa: BLE001
+        raise click.ClickException(f"Could not fetch {uri}: {e}")
+    return did, _record_value_to_dict(resp.value)
+
+
+@main.command("embed-c2pa")
+@click.argument("video_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--consent", "consent_uri", required=True, help="AT-URI of the consent receipt to embed.")
+@click.option(
+    "--output",
+    "output_path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="Output file. Defaults to <video>.c2pa.<ext>.",
+)
+def embed_c2pa(video_path, consent_uri, output_path):
+    """Embed a signed C2PA consent manifest into a copy of the video file.
+
+    Fetches the consent receipt and the video record it references, then writes
+    the consent terms plus both at:// URIs into the output file's bytes so
+    provenance survives the file leaving the platform. A downstream holder can
+    recover the consent — and re-check revocation via `consentvid resync` — from
+    the file alone. Requires the c2pa extra: pip install -e ".[c2pa]".
+    """
+    from consentvid import c2pa_embed as ce
+
+    client = get_client()
+    consent_did, consent = _fetch_record(client, consent_uri)
+    video_uri = consent.get("videoUri")
+    if not video_uri:
+        raise click.ClickException("Consent record has no videoUri.")
+    _, video = _fetch_record(client, video_uri)
+
+    if consent_did == client.me.did:
+        handle = client.me.handle
+    else:
+        try:
+            handle = client.com.atproto.repo.describe_repo({"repo": consent_did}).handle
+        except Exception:  # noqa: BLE001
+            handle = consent_did
+
+    if output_path is None:
+        output_path = video_path.with_suffix(f".c2pa{video_path.suffix}")
+
+    try:
+        out = ce.embed_consent(
+            video_path=video_path,
+            out_path=output_path,
+            consent_uri=consent_uri,
+            consent=consent,
+            video_uri=video_uri,
+            video=video,
+            contributor_handle=handle,
+            contributor_did=consent_did,
+        )
+    except RuntimeError as e:
+        raise click.ClickException(str(e))
+    click.echo(f"Embedded C2PA consent manifest -> {out}")
+    click.echo(f"  consent: {consent_uri}")
+    click.echo(f"  video:   {video_uri}")
+    click.echo(
+        "  note:    signed with a self-signed prototype cert; readers will flag "
+        "the signer as untrusted. Production needs a CA-issued cert."
+    )
+
+
+@main.command("read-c2pa")
+@click.argument("video_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+def read_c2pa(video_path):
+    """Read the embedded ConsentVid C2PA manifest back out of a file."""
+    from consentvid import c2pa_embed as ce
+
+    try:
+        man = ce.read_manifest(video_path)
+    except RuntimeError as e:
+        raise click.ClickException(str(e))
+    except Exception as e:  # noqa: BLE001 — no/invalid manifest
+        raise click.ClickException(f"No readable C2PA manifest in {video_path}: {e}")
+    active = man.get("manifests", {}).get(man.get("active_manifest"), {})
+    click.echo(f"validation_state: {man.get('validation_state')}")
+    click.echo(f"title:            {active.get('title')}")
+    receipt = next(
+        (a.get("data") for a in active.get("assertions", [])
+         if a.get("label") == ce.CONSENT_ASSERTION_LABEL),
+        None,
+    )
+    if receipt is None:
+        click.echo("No org.consentvid.consent assertion present.")
+        return
+    click.echo("consent receipt:")
+    click.echo(json.dumps(receipt, indent=2))
+
+
+_RESYNC_MARK = {
+    "valid": "ok",
+    "revoked": "REVOKED",
+    "expired": "EXPIRED",
+    "unknown": "?",
+}
+
+
+@main.command()
+@click.argument("input_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option(
+    "--write",
+    "write_path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="Write a filtered manifest with revoked/expired clips removed (manifest input only).",
+)
+def resync(input_path, write_path):
+    """Re-check consent against the live network and report what must be dropped.
+
+    INPUT_PATH is either a Croissant manifest (JSON) or a C2PA-embedded video
+    file — for the latter the consent URI is read straight out of the embedded
+    manifest, so a file that has left the platform can be re-checked on its own.
+
+    Consent is revoked by deleting the receipt from the contributor's repo; this
+    detects that (and expiry) so a consumer can honour the data-release
+    maintenance plan. Clips whose status can't be determined (network error) are
+    reported unknown and NOT dropped.
+    """
+    from consentvid import resync as rs
+
+    client = get_client()
+
+    # A Croissant manifest is JSON; a media file is not. Detect by parse.
+    try:
+        manifest = json.loads(input_path.read_bytes())
+        is_manifest = isinstance(manifest, dict)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        is_manifest = False
+
+    if not is_manifest:
+        from consentvid import c2pa_embed as ce
+
+        try:
+            receipt = ce.extract_consent_receipt(input_path)
+        except RuntimeError as e:
+            raise click.ClickException(str(e))
+        except Exception as e:  # noqa: BLE001 — not JSON and not a C2PA file
+            raise click.ClickException(
+                f"{input_path} is neither a JSON manifest nor a readable C2PA file: {e}"
+            )
+        if not receipt:
+            raise click.ClickException(
+                "Embedded C2PA manifest has no org.consentvid.consent assertion."
+            )
+        consent_uri = receipt.get("consentUri")
+        status = rs.consent_status(client, consent_uri, receipt.get("expiresAt"))
+        click.echo(f"  [{_RESYNC_MARK[status]:>7}] {input_path.name}  {consent_uri}")
+        click.echo(f"\nstatus: {status}")
+        if status in rs.DROP_STATUSES:
+            click.echo("This file's consent is no longer valid — do not use it.")
+        if write_path:
+            click.echo("(--write applies to manifest input only; ignored.)")
+        return
+
+    results = rs.resync_manifest(client, manifest)
+    if not results:
+        click.echo("No FileObjects with consent receipts in this manifest.")
+        return
+    for r in results:
+        click.echo(f"  [{_RESYNC_MARK[r['status']]:>7}] {r['name']}  {r['consentUri']}")
+    counts = {s: sum(1 for r in results if r["status"] == s) for s in _RESYNC_MARK}
+    click.echo()
+    click.echo(f"valid:   {counts[rs.VALID]}")
+    click.echo(f"revoked: {counts[rs.REVOKED]}")
+    click.echo(f"expired: {counts[rs.EXPIRED]}")
+    if counts[rs.UNKNOWN]:
+        click.echo(f"unknown: {counts[rs.UNKNOWN]} (not dropped)")
+    if write_path:
+        filtered = rs.filter_manifest(manifest, results, now_iso())
+        write_path.parent.mkdir(parents=True, exist_ok=True)
+        write_path.write_text(json.dumps(filtered, indent=2))
+        dropped = len(manifest.get("distribution", [])) - len(filtered["distribution"])
+        click.echo(f"\nWrote {write_path} ({dropped} clip(s) dropped).")
 
 
 @main.group()
@@ -456,6 +649,40 @@ def appview_stats():
     click.echo(f"videos:        {n_videos}")
     click.echo(f"consents:      {n_consents}  ({n_revoked} revoked)")
     click.echo(f"contributors:  {n_dids}")
+
+
+@appview.command("revocations")
+@click.option("--since", default=None, help="Only revocations after this ISO timestamp (incremental re-sync).")
+@click.option("--json", "as_json", is_flag=True, default=False, help="Emit JSON.")
+def appview_revocations(since, as_json):
+    """List revoked consent receipts from the index — a feed consumers re-sync against.
+
+    The indexer marks a consent revoked when its record is deleted on the
+    firehose. Poll this with --since <last-seen-timestamp> to pull only new
+    revocations and drop the corresponding clips from a dataset.
+    """
+    from consentvid import appview as av
+
+    conn = av.connect()
+    where = ["revoked_at IS NOT NULL"]
+    args = []
+    if since:
+        where.append("revoked_at > ?")
+        args.append(since)
+    rows = conn.execute(
+        f"SELECT uri, did, video_uri, revoked_at FROM consents "
+        f"WHERE {' AND '.join(where)} ORDER BY revoked_at DESC",
+        args,
+    ).fetchall()
+    if as_json:
+        click.echo(json.dumps([dict(r) for r in rows], indent=2))
+        return
+    if not rows:
+        click.echo("No revocations recorded." + (f" (since {since})" if since else ""))
+        return
+    for r in rows:
+        click.echo(f"{r['revoked_at']}  {r['uri']}")
+    click.echo(f"\n{len(rows)} revocation(s).")
 
 
 @appview.command("query")

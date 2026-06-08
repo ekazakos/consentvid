@@ -21,8 +21,12 @@ Storage of the bytes is intentionally decoupled. The `video` record commits to a
 
 ```bash
 cd /Users/ekazakos/Documents/consentvid
-python -m venv .venv && source .venv/bin/activate
-pip install -e .
+# NOTE: this repo lives under ~/Documents, which is iCloud-synced. iCloud
+# offloads ("dataless") a virtualenv's small files non-deterministically, which
+# silently breaks editable installs (ModuleNotFoundError from an evicted .pth).
+# Keep the venv OUTSIDE iCloud:
+python3.13 -m venv ~/.consentvid/venv && source ~/.consentvid/venv/bin/activate
+pip install -e ".[c2pa]"   # add ,r2 and/or ,dev as needed
 cp .env.example .env
 ```
 
@@ -62,6 +66,56 @@ consentvid export ./training-only.json --purpose training --tag cooking
 # Revoke
 consentvid revoke at://did:plc:.../org.consentvid.consent/<rkey>
 ```
+
+## Revocation re-sync
+
+Revocation = deleting the consent receipt from the contributor's repo. That
+alone doesn't reach copies already pulled into datasets, so consumers re-sync.
+Two paths:
+
+```bash
+# Consumer side: re-check every consent receipt embedded in a manifest against
+# the live network; report (and optionally drop) revoked or expired clips.
+consentvid resync ./manifest.json
+consentvid resync ./manifest.json --write ./manifest.clean.json
+
+# Producer side (requires a running AppView, below): emit the revoked-consent
+# feed. Poll with --since <last-seen> for incremental re-sync.
+consentvid appview revocations
+consentvid appview revocations --since 2026-04-29T00:00:00Z --json
+```
+
+`resync` is authoritative against the contributor's repo (a `getRecord` →
+`RecordNotFound` means revoked) and needs no AppView. Expiry is read from the
+receipt's signed `expiresAt`. Clips whose status can't be determined (network
+error) are reported `unknown` and never dropped — fail-open on transient
+errors, never on a revocation.
+
+## C2PA in-file provenance
+
+ATproto records live in the contributor's repo; once a file leaves the platform
+the link to its signed consent is lost. `embed-c2pa` writes a signed C2PA
+manifest (ISO 22144) *into the video bytes*, carrying the consent terms plus the
+at:// URIs of both the consent receipt and the video record. A downstream holder
+can then recover provenance — and re-check revocation with `resync` — from the
+file alone.
+
+```bash
+pip install -e ".[c2pa]"
+
+consentvid embed-c2pa ./clip.mp4 \
+    --consent at://did:plc:.../org.consentvid.consent/<rkey> \
+    --output ./clip.c2pa.mp4
+
+consentvid read-c2pa ./clip.c2pa.mp4   # read the embedded consent receipt back
+```
+
+Signing uses a self-signed ES256 credential generated and cached under
+`~/.consentvid/c2pa/` (a root CA + leaf chain, since c2pa-rs rejects a lone
+self-signed end-entity cert). Manifests embed and read back as `Valid`, but the
+signer will not chain to the C2PA trust list — a reader flags it untrusted.
+Production must swap in a CA-issued document-signing certificate at those paths;
+nothing else changes.
 
 The exported manifest conforms to [Croissant 1.0](http://mlcommons.org/croissant/)
 with the [RAI extension](http://mlcommons.org/croissant/RAI/). Each `cr:FileObject`
@@ -124,8 +178,12 @@ The pyproject is set to require >=3.10. The development venv was built with
 
 ## What's next (after this MVP works)
 
-- Croissant-RAI manifest exporter: turn a query over consent records into a dataset card researchers can cite.
-- AppView: index the firehose for `org.consentvid.*` records across users.
-- Revocation feed.
-- C2PA manifest embedded in the file at register-video time.
-- Pluggable storage backends actually wired up (R2 upload, IPFS pin, PeerTube push).
+Done: Croissant-RAI exporter, AppView indexer, R2 storage, revocation re-sync
+(`resync` + `appview revocations`), C2PA in-file provenance (`embed-c2pa`).
+
+Remaining:
+- C2PA with a CA-issued (trust-list-chaining) certificate instead of the
+  self-signed prototype signer.
+- IPFS pin and PeerTube push storage backends (only R2 is wired today).
+- Publish the `org.consentvid.*` lexicons at a resolvable URL so records can be
+  written with `validate: true`.
