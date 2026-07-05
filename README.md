@@ -167,13 +167,22 @@ export CONSENTVID_VALIDATE=1        # or pass --validate to register-video/attac
 ```
 
 **Caveat (verified 2026-07-05):** even with the lexicons published and the DNS
-record propagated globally, `validate:true` currently fails against bsky.social
-with `Unknown lexicon type: org.consentvid.*`. The reference Bluesky PDS does not
-yet resolve external lexicons at validation time (the `_lexicon` DNS mechanism is
-a young part of the protocol and isn't implemented PDS-side). Keep
-`CONSENTVID_VALIDATE=0` for now — publishing still makes the lexicons discoverable
-by tools that *do* resolve them (including `resolve-lexicon`) and is
-forward-compatible for when PDS-side resolution lands.
+record propagated globally, `validate:true` fails against bsky.social with
+`Unknown lexicon type: org.consentvid.*`. This is **by design, not a gap**: the
+[AT Protocol Lexicon spec](https://atproto.com/specs/lexicon) defines three PDS
+validation modes — *explicit-required* (fail if the lexicon can't be resolved),
+*optimistic* (the default: validate if known, otherwise allow), and *no
+validation* — and makes **on-demand resolution of third-party lexicons optional**
+for a PDS. bsky.social runs the optimistic default and does not resolve external
+lexicons on write, so `validate:true` (explicit-required) fails there and may
+never work on bsky.social regardless of our setup.
+
+Keep `CONSENTVID_VALIDATE=0` — it corresponds to the spec's *optimistic* default
+and is the correct setting. Publishing the lexicons is still worthwhile: they are
+resolved and consumed by ecosystem tooling — `pdsls.dev`,
+`@atproto/lexicon-resolver`, the Rust `atproto-lexicon` crate, and our own
+`resolve-lexicon` — so `org.consentvid.*` is a real, discoverable namespace even
+though bsky.social won't enforce it at write time.
 
 ATproto resolves a lexicon by domain authority: `org.consentvid.consent` →
 `consentvid.org` → the `_lexicon.consentvid.org` TXT record → a DID whose repo
