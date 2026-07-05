@@ -50,13 +50,13 @@
     "transform": "cr:transform"
   },
   "@type": "sc:Dataset",
-  "name": "consentvid-ekazakos-bsky-social-2026-04-29",
+  "name": "consentvid-ekazakos-bsky-social-2026-07-05",
   "description": "Consent-first video dataset registered by ekazakos.bsky.social via ConsentVid. Each clip carries a cryptographically signed ATproto consent receipt declaring permitted purposes, model classes, modalities, and revocation status.",
   "conformsTo": "http://mlcommons.org/croissant/1.0",
   "version": "0.1.0",
-  "datePublished": "2026-04-29",
+  "datePublished": "2026-07-05",
   "license": "https://creativecommons.org/licenses/by/4.0/",
-  "citeAs": "ekazakos.bsky.social (2026-04-29). consentvid-ekazakos-bsky-social-2026-04-29. ConsentVid dataset. https://bsky.app/profile/ekazakos.bsky.social",
+  "citeAs": "ekazakos.bsky.social (2026-07-05). consentvid-ekazakos-bsky-social-2026-07-05. ConsentVid dataset. https://bsky.app/profile/ekazakos.bsky.social",
   "url": "https://bsky.app/profile/ekazakos.bsky.social",
   "creator": {
     "@type": "sc:Person",

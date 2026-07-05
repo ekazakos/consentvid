@@ -108,7 +108,7 @@ revoke consent      ──►    delete event           ──►     <span clas
       <p class="section-num"><em>03</em> &nbsp;·&nbsp; status</p>
       <h2>Working today, <em>on the live network</em>.</h2>
       <div class="body">
-        <p>The CLI registers and revokes records on the live ATproto network. The AppView subscribes to Jetstream and indexes events in real time. The Croissant-RAI manifest validates against the official 1.0 schema using <span class="mono">mlcroissant</span>.</p>
+        <p>The CLI registers, validates, and revokes records on the live ATproto network. Contributors store the bytes on any backend — Cloudflare R2, IPFS, or PeerTube — while the platform holds only signed records and content hashes. The AppView subscribes to Jetstream and indexes events in real time, validating each on ingest. Datasets export a Croissant-RAI manifest (validates against the official 1.0 schema); consumers re-sync revocations before each run with <span class="mono">consentvid resync</span>, and consent can be embedded directly in the video bytes as a signed C2PA manifest. The <span class="mono">org.consentvid.*</span> lexicons are published and resolvable via DNS.</p>
         <p>Below: real artifacts written to a real ATproto repository on 2026-04-29. Each is publicly fetchable via <span class="mono">com.atproto.repo.getRecord</span>.</p>
       </div>
 
@@ -244,22 +244,22 @@ revoke consent      ──►    delete event           ──►     <span clas
 
     <section class="section" id="roadmap">
       <p class="section-num"><em>06</em> &nbsp;·&nbsp; roadmap</p>
-      <h2>What gets built <em>next</em>.</h2>
+      <h2>Shipped — <em>and what's next</em>.</h2>
       <div class="roadmap">
         <div class="roadmap-item">
-          <div class="when">Q3 2026</div>
-          <h4>Lexicon hosting at consentvid.org. First 100 contributors.</h4>
-          <p>Resolvable lexicons under <span class="mono">/lexicons</span>; hosted Croissant manifests per contributor; web uploader for non-CLI users; targeted contributor outreach (egocentric video, sign language, instructional). Move from <span class="mono">validate: false</span> to schema-validated records.</p>
+          <div class="when">Shipped</div>
+          <h4>Consent, provenance, storage, revocation.</h4>
+          <p>Signed video + consent records on the live network. Pluggable storage — Cloudflare R2, IPFS, PeerTube. Revocation re-sync (<span class="mono">consentvid resync</span>) plus a revocation feed. C2PA in-file provenance, so consent travels with the bytes after copying. <span class="mono">org.consentvid.*</span> lexicons published and DNS-resolvable, with client-side schema validation.</p>
         </div>
         <div class="roadmap-item">
-          <div class="when">Q4 2026</div>
-          <h4>Storage and transcoding pipeline.</h4>
-          <p>Cloudflare R2 storage backend (built; awaiting credentials). PeerTube-based transcoding for HLS delivery. C2PA manifest embedded in the file at register time, so consent travels with the bytes after copying.</p>
+          <div class="when">Next</div>
+          <h4>Web uploader. First contributor community.</h4>
+          <p>A browser uploader for non-CLI contributors; hosted per-contributor Croissant manifests; a hosted AppView. Targeted onboarding of one motivated community — egocentric, sign language, or oral history — where consent-first is a feature, not a tax.</p>
         </div>
         <div class="roadmap-item">
-          <div class="when">2027</div>
-          <h4>Federated AppView. Revocation feed library.</h4>
-          <p>Pluggable AppView that any researcher can run independently. <span class="mono">consentvid-loader</span> Python library for dataset consumers — a single call before each training run re-syncs revocations and verifies signatures.</p>
+          <div class="when">Later</div>
+          <h4>Loader library. Compensation. Compliance.</h4>
+          <p>A <span class="mono">consentvid-loader</span> so a dataset consumer re-syncs revocations and verifies signatures in one call before each training run. Optional contributor compensation. Consent-receipt verification aligned with EU AI Act Article 53 documentation duties.</p>
         </div>
       </div>
     </section>
