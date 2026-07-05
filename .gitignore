@@ -9,3 +9,6 @@ dist/
 build/
 .pytest_cache/
 .DS_Store
+
+# Kept local, not published (funding drafts, strategy).
+grants/
