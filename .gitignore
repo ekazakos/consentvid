@@ -12,3 +12,6 @@ build/
 
 # Kept local, not published (funding drafts, strategy).
 grants/
+
+# Local design-preview drafts (not part of the deployed site).
+web/preview/

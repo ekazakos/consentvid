@@ -1,298 +1,157 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ConsentVid — a consent layer for video AI</title>
-  <meta name="description" content="A consent-first crowdsourced video dataset platform built on ATproto. Per-clip cryptographically signed consent for AI training, with revocations honored in real time.">
-  <meta property="og:title" content="ConsentVid — a consent layer for video AI">
-  <meta property="og:description" content="Crowdsourced video clips with per-clip cryptographic consent, on ATproto. Revocations honored in real time.">
-  <meta property="og:type" content="website">
-  <meta property="og:url" content="https://consentvid.org">
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23F4EEDF'/%3E%3Cpath d='M6 12 L16 6 L26 12 L26 22 L16 26 L6 22 Z' fill='none' stroke='%238A2515' stroke-width='2'/%3E%3C/svg%3E">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@300;400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ConsentVid — a consent layer for video AI</title>
+<meta name="description" content="A consent-first crowdsourced video dataset platform on ATProto. Per-clip cryptographically signed consent for AI training, with revocations honored in real time.">
+<meta property="og:title" content="ConsentVid — a consent layer for video AI">
+<meta property="og:description" content="Crowdsourced video clips with per-clip cryptographic consent, on ATProto. Revocations honored in real time; every dataset row traces back to its signed receipt.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://consentvid.org">
+<meta name="theme-color" content="#7c3aed">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%237c3aed'/%3E%3Cstop offset='.5' stop-color='%23d946ef'/%3E%3Cstop offset='1' stop-color='%2306b6d4'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='16' fill='url(%23g)'/%3E%3Cpath d='M19 33 l9 9 l17 -19' fill='none' stroke='white' stroke-width='6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400;1,9..144,500&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
 </head>
 <body>
 
-<header class="masthead">
-  <div class="container">
-    <a href="/" class="wordmark">consentvid.org</a>
-    <nav>
-      <a href="#problem">problem</a>
-      <a href="#how">how</a>
-      <a href="#status">status</a>
-      <a href="#compare">compare</a>
-      <a href="#why-now">why now</a>
-      <a href="#roadmap">roadmap</a>
-      <a href="https://github.com/ekazakos/consentvid">github</a>
+<div class="glow"><span class="g1"></span><span class="g2"></span><span class="g3"></span></div>
+
+<header class="top">
+  <div class="wrap">
+    <div class="brand"><b>consentvid</b><span class="dot">.org</span></div>
+    <nav class="nav">
+      <a href="#how">how</a><a href="#status">status</a><a href="#compare">compare</a><a href="#roadmap">roadmap</a>
+      <a class="ghub" href="https://github.com/ekazakos/consentvid">github ↗</a>
     </nav>
   </div>
 </header>
 
 <main>
-  <div class="container">
+  <section class="hero wrap">
+    <div class="badges rev"><span class="badge">ATProto</span><span class="badge">C2PA</span><span class="badge">Croissant-RAI</span><span class="badge">Apache-2.0</span></div>
+    <h1 class="rev d1">A consent layer <span class="grad">for video AI</span>.</h1>
+    <p class="lede rev d2">Crowdsourced video clips with per-clip permissions — purpose, model class, modality, expiry — cryptographically signed by the contributor on ATProto. Revocations propagate through the public firehose in real time, and every dataset row traces back to its signed receipt.</p>
+    <div class="cta rev d3">
+      <a class="btn primary" href="https://github.com/ekazakos/consentvid">View on GitHub →</a>
+      <a class="btn ghost" href="#status">See it running</a>
+    </div>
 
-    <section class="hero">
-      <p class="meta">A research project · CTU Prague · live since 2026-04-27</p>
-      <h1>A consent layer<em>for video AI.</em></h1>
-      <p class="lede">Crowdsourced video clips, with per-clip permissions — purpose, model class, modality, expiry — <em>cryptographically signed</em> by the contributor on ATproto. Revocations propagate through the public firehose in real time. Researchers cite a Croissant-RAI manifest that traces every row back to its signed receipt.</p>
-      <div class="ctas">
-        <a href="https://github.com/ekazakos/consentvid" class="btn btn--primary">View on GitHub <span class="arr">→</span></a>
-        <a href="#status" class="btn">See it running</a>
-        <a href="/lexicons/org.consentvid.video.json" class="btn">Read the lexicon</a>
+    <div class="receipt rev d3">
+      <div class="bar"></div>
+      <div class="rhead"><span class="rtitle">consent receipt</span><span class="seal">✓ signed</span></div>
+      <div class="rbody">
+        <div class="row"><span class="k">did</span><span class="v">did:plc:u73ld57pmwsta45y45uitdfi</span></div>
+        <div class="row"><span class="k">video</span><span class="v"><span class="pre">at://</span>…/<span class="nsid">org.consentvid.video</span>/3mkm6izdo6u2o</span></div>
+        <div class="row"><span class="k">consent</span><span class="v"><span class="pre">at://</span>…/<span class="nsid">org.consentvid.consent</span>/3mkm6zmigrx2v</span></div>
+        <div class="row"><span class="k">terms</span><span class="v">training, evaluation · academic, openWeights · revocable=true</span></div>
       </div>
+    </div>
+  </section>
 
-      <div class="receipt-plate" aria-label="Live consent receipt as of 2026-04-29">
-        <div class="row"><span class="k">contributor did</span><span class="v">did:plc:u73ld57pmwsta45y45uitdfi</span></div>
-        <div class="row"><span class="k">video</span><span class="v"><span class="pre">at://</span>did:plc:u73ld57pmwsta45y45uitdfi/<span class="nsid">org.consentvid.video</span>/3mkm6izdo6u2o</span></div>
-        <div class="row"><span class="k">consent</span><span class="v"><span class="pre">at://</span>did:plc:u73ld57pmwsta45y45uitdfi/<span class="nsid">org.consentvid.consent</span>/3mkm6zmigrx2v</span></div>
-        <div class="row"><span class="k">content sha256</span><span class="v">29506f94b2eafd91acfa4ee6ccaa44ef39b8671e0220545b9c1c8841e1e3e360</span></div>
-        <div class="row"><span class="k">terms</span><span class="v">purposes=[training, evaluation] · model_classes=[academic, openWeights] · modalities=[video, audio] · revocable=true</span></div>
+  <section id="problem" class="wrap">
+    <p class="eyebrow">The problem</p>
+    <h2 class="h2">Video dataset curation has a <span class="grad">consent</span> problem.</h2>
+    <p class="sub">YouTube rate limits make dataset-scale download infeasible. Bluesky is short-form and never consented to AI use. The nearest alternatives don't fit the gap.</p>
+    <div class="grid2">
+      <div class="pcard"><p class="nm">Spawning · Do Not Train</p><p>Opt-out only — 80M URLs honored on goodwill, applied to data that already left.</p></div>
+      <div class="pcard"><p class="nm">Sony FHIBE</p><p>Right idea on images (Nature 2025): ~10k frames, centrally curated, revocable — but small, and not video.</p></div>
+      <div class="pcard"><p class="nm">Mozilla Common Voice</p><p>Gold-standard opt-in crowdsourcing — but audio, with no per-contribution cryptographic provenance.</p></div>
+      <div class="pcard fill"><p class="nm">ConsentVid</p><p>Federated · video · consent-first · cryptographically signed. The empty intersection — filled.</p></div>
+    </div>
+  </section>
+
+  <section id="how" class="wrap">
+    <p class="eyebrow">How it works</p>
+    <h2 class="h2">Three parties, <span class="grad">one open protocol</span>.</h2>
+    <p class="sub">Every record lives in the contributor's own ATProto repo, signed by their key. No central database. Revocation is a record deletion. Storage is decoupled from metadata.</p>
+    <div class="feat">
+      <div class="fcard"><div class="fnum">1</div><p class="who">Contributor</p><h3>Sign consent</h3><p>Register a clip and a granular receipt on your own PDS — purpose × model class × modality × expiry × revocable. Your repo key signs both.</p></div>
+      <div class="fcard"><div class="fnum">2</div><p class="who">AppView</p><h3>Index the firehose</h3><p>Subscribes to Jetstream, indexes every <span class="mono">org.consentvid.*</span> record, validating on ingest. Deletions mark consent revoked in real time.</p></div>
+      <div class="fcard"><div class="fnum">3</div><p class="who">Researcher</p><h3>Cite signed receipts</h3><p>Export a Croissant-RAI manifest. Each file embeds its consent receipt's AT-URI. Re-sync revocations before each training run.</p></div>
+    </div>
+  </section>
+
+  <section id="status" class="wrap">
+    <p class="eyebrow">Status</p>
+    <h2 class="h2">Working today, <span class="grad">on the live network</span>.</h2>
+    <p class="sub">Registered, validated, and revoked on live ATProto. Bytes on R2, IPFS, or PeerTube; the platform holds only signed records and hashes.</p>
+    <div class="livecard">
+      <p style="color:var(--muted);margin:0 0 4px;font-size:15px">The AppView indexes Jetstream in real time (validating on ingest); datasets export a Croissant-RAI manifest; consumers re-sync revocations with <span class="mono">consentvid resync</span>; consent can be embedded in the bytes as a signed C2PA manifest; and the <span class="mono">org.consentvid.*</span> lexicons are published and DNS-resolvable.</p>
+      <div class="arts">
+        <div class="art"><div class="lab">contributor did</div><div class="val">did:plc:u73ld57pmwsta45y45uitdfi</div></div>
+        <div class="art"><div class="lab">content hash</div><div class="val">sha256-29506f94…e1e3e360</div></div>
+        <div class="art"><div class="lab">video · at-uri</div><div class="val"><span style="color:var(--faint)">at://</span>…/<span class="accent">org.consentvid.video</span>/3mkm6izdo6u2o</div></div>
+        <div class="art"><div class="lab">consent · at-uri</div><div class="val"><span style="color:var(--faint)">at://</span>…/<span class="accent">org.consentvid.consent</span>/3mkm6zmigrx2v</div></div>
       </div>
-    </section>
-
-    <section class="section" id="problem">
-      <p class="section-num"><em>01</em> &nbsp;·&nbsp; problem</p>
-      <h2>Video dataset curation has a <em>consent</em> problem.</h2>
-      <div class="body">
-        <p>YouTube's rate limits make dataset-scale download infeasible for academic groups. Bluesky hosts only short videos, and its users never consented to AI use. The closest things to a solution don't fit the gap.</p>
-        <p><strong>Spawning's "Do Not Train"</strong> registry is opt-out only — 80M URLs honored on goodwill, applied to data that already left.</p>
-        <p><strong>Sony's FHIBE</strong> (Nature, 2025) is the right idea executed on images: ~10,000 frames, centrally curated, with revocable informed consent. Beautiful, but small, and not video.</p>
-        <p><strong>Mozilla Common Voice</strong> is the gold-standard opt-in crowdsourced dataset — but for audio, with no per-contribution cryptographic provenance.</p>
-        <p>The intersection — <em>federated, video, consent-first, cryptographically signed</em> — is empty. ConsentVid fills it.</p>
+      <div class="code">
+        <div class="chr"><i></i><i></i><i></i></div>
+        <pre><span class="ky">"@type"</span>: <span class="st">"sc:Dataset"</span>, <span class="ky">"conformsTo"</span>: <span class="st">"…/croissant/1.0"</span>,
+<span class="ky">"distribution"</span>: [{ <span class="ky">"@type"</span>: <span class="st">"cr:FileObject"</span>, <span class="ky">"sha256"</span>: <span class="st">"29506f94…"</span>,
+  <span class="ky">"cr:consentReceipt"</span>: {
+    <span class="ky">"atUri"</span>:        <span class="st">"at://…/org.consentvid.consent/3mkm6zmigrx2v"</span>,
+    <span class="ky">"purposes"</span>:     [<span class="nm">"training"</span>, <span class="nm">"evaluation"</span>],
+    <span class="ky">"modelClasses"</span>: [<span class="nm">"academic"</span>, <span class="nm">"openWeights"</span>],
+    <span class="ky">"revocable"</span>:    true }}]</pre>
       </div>
-    </section>
+    </div>
+  </section>
 
-    <section class="section" id="how">
-      <p class="section-num"><em>02</em> &nbsp;·&nbsp; how it works</p>
-      <h2>Three parties, <em>one open protocol</em>.</h2>
-      <div class="body">
-        <p>Every record lives in the contributor's own ATproto repository, signed by their repo key. There is no central database we control. Revocation is a record deletion. Storage is decoupled from metadata.</p>
-      </div>
-
-      <div class="flow">
-        <div class="flow-step flow-step--a">
-          <div class="who">contributor</div>
-          <h3>Sign consent.</h3>
-          <p>Register a clip and a granular consent receipt on your own PDS — purpose × model class × modality × expiry × revocable. Your repo key signs both records.</p>
-        </div>
-        <div class="flow-step flow-step--b">
-          <div class="who">appview</div>
-          <h3>Index the firehose.</h3>
-          <p>An AppView subscribes to ATproto Jetstream and persists every <span class="mono">org.consentvid.*</span> record into SQLite. Deletions mark consent revoked in real time.</p>
-        </div>
-        <div class="flow-step flow-step--c">
-          <div class="who">researcher</div>
-          <h3>Cite signed receipts.</h3>
-          <p>Export a Croissant-RAI dataset manifest. Each <span class="mono">FileObject</span> embeds the AT-URI of its signed consent receipt. Re-sync revocations before each training run.</p>
-        </div>
-      </div>
-
-<pre class="ascii">contributor                ATproto firehose                AppView (indexer)
-─────────────              ─────────────────              ─────────────────
-register video      ──►    commit broadcast       ──►     SQLite + revocation
-attach consent      ──►    signed by repo key     ──►     Croissant export
-revoke consent      ──►    delete event           ──►     <span class="hl">marked revoked</span>
-                                                                  │
-                                                                  ▼
-                                                            researcher
-                                                          ───────────────
-                                                          fetch manifest
-                                                          validate, train</pre>
-    </section>
-
-    <section class="section" id="status">
-      <p class="section-num"><em>03</em> &nbsp;·&nbsp; status</p>
-      <h2>Working today, <em>on the live network</em>.</h2>
-      <div class="body">
-        <p>The CLI registers, validates, and revokes records on the live ATproto network. Contributors store the bytes on any backend — Cloudflare R2, IPFS, or PeerTube — while the platform holds only signed records and content hashes. The AppView subscribes to Jetstream and indexes events in real time, validating each on ingest. Datasets export a Croissant-RAI manifest (validates against the official 1.0 schema); consumers re-sync revocations before each run with <span class="mono">consentvid resync</span>, and consent can be embedded directly in the video bytes as a signed C2PA manifest. The <span class="mono">org.consentvid.*</span> lexicons are published and resolvable via DNS.</p>
-        <p>Below: real artifacts written to a real ATproto repository on 2026-04-29. Each is publicly fetchable via <span class="mono">com.atproto.repo.getRecord</span>.</p>
-      </div>
-
-      <div class="artifact-grid">
-        <div class="artifact">
-          <div class="label">contributor DID</div>
-          <div class="value">did:plc:u73ld57pmwsta45y45uitdfi</div>
-        </div>
-        <div class="artifact">
-          <div class="label">content hash</div>
-          <div class="value">sha256-29506f94b2eafd91acfa4ee6c<br>caa44ef39b8671e0220545b9c1c8841<br>e1e3e360</div>
-        </div>
-        <div class="artifact">
-          <div class="label">video record · AT-URI</div>
-          <div class="value"><span class="dim">at://</span>did:plc:u73ld57pmwsta45y45uitdfi/<br><span class="accent">org.consentvid.video</span>/3mkm6izdo6u2o</div>
-        </div>
-        <div class="artifact">
-          <div class="label">consent receipt · AT-URI</div>
-          <div class="value"><span class="dim">at://</span>did:plc:u73ld57pmwsta45y45uitdfi/<br><span class="accent">org.consentvid.consent</span>/3mkm6zmigrx2v</div>
-        </div>
-      </div>
-
-      <div class="body" style="margin-top: 2.5rem;">
-        <p>The live, validated Croissant manifest is downloadable: <a href="/dataset.json">dataset.json</a>. A snippet:</p>
-      </div>
-
-<pre><code>{
-  "@context":  { "@vocab": "https://schema.org/", "cr": "http://mlcommons.org/croissant/", ... },
-  "@type":     "sc:Dataset",
-  "name":      "consentvid-ekazakos-bsky-social-2026-04-29",
-  "conformsTo":"http://mlcommons.org/croissant/1.0",
-  "license":   "https://creativecommons.org/licenses/by/4.0/",
-  "distribution": [{
-    "@type":  "cr:FileObject",
-    "@id":    "video-3mkm6izdo6u2o",
-    "sha256": "29506f94b2eafd91acfa4ee6ccaa44ef39b8671e0220545b9c1c8841e1e3e360",
-    "cr:atUri": "at://did:plc:u73ld57pmwsta45y45uitdfi/org.consentvid.video/3mkm6izdo6u2o",
-    "cr:consentReceipt": {
-      "atUri":         "at://did:plc:u73ld57pmwsta45y45uitdfi/org.consentvid.consent/3mkm6zmigrx2v",
-      "purposes":      ["training", "evaluation"],
-      "modelClasses":  ["academic", "openWeights"],
-      "modalities":    ["video", "audio"],
-      "compensation":  "creditOnly",
-      "revocable":     true
-    }
-  }]
-}</code></pre>
-    </section>
-
-    <section class="section" id="compare">
-      <p class="section-num"><em>04</em> &nbsp;·&nbsp; compared</p>
-      <h2>Where ConsentVid <em>sits</em>.</h2>
-
-      <div class="compare-wrap">
-      <table class="compare">
-        <thead>
-          <tr>
-            <th>Project</th>
-            <th>Modality</th>
-            <th>Approach</th>
-            <th>Signed</th>
-            <th>Federated</th>
-            <th>Revocable</th>
-          </tr>
-        </thead>
+  <section id="compare" class="wrap">
+    <p class="eyebrow">Compared</p>
+    <h2 class="h2">Where ConsentVid <span class="grad">sits</span>.</h2>
+    <div class="tblwrap">
+      <table class="tbl">
+        <thead><tr><th>Project</th><th>Modality</th><th>Approach</th><th>Signed</th><th>Federated</th><th>Revocable</th></tr></thead>
         <tbody>
-          <tr class="us">
-            <td>ConsentVid</td>
-            <td>Video</td>
-            <td>Consent-first</td>
-            <td><span class="dot dot--yes" aria-label="yes"></span></td>
-            <td><span class="dot dot--yes" aria-label="yes"></span></td>
-            <td><span class="dot dot--yes" aria-label="yes"></span></td>
-          </tr>
-          <tr>
-            <td>Sony FHIBE</td>
-            <td>Image</td>
-            <td>Consent-first</td>
-            <td><span class="dot dot--partial" aria-label="partial"></span></td>
-            <td><span class="dot dot--no" aria-label="no"></span></td>
-            <td><span class="dot dot--yes" aria-label="yes"></span></td>
-          </tr>
-          <tr>
-            <td>Mozilla Common Voice</td>
-            <td>Audio</td>
-            <td>Consent-first</td>
-            <td><span class="dot dot--no" aria-label="no"></span></td>
-            <td><span class="dot dot--no" aria-label="no"></span></td>
-            <td><span class="dot dot--partial" aria-label="partial"></span></td>
-          </tr>
-          <tr>
-            <td>Spawning DNT</td>
-            <td>Generic</td>
-            <td>Opt-out</td>
-            <td><span class="dot dot--no" aria-label="no"></span></td>
-            <td><span class="dot dot--no" aria-label="no"></span></td>
-            <td><span class="na">n/a</span></td>
-          </tr>
-          <tr>
-            <td>DECORAIT (arXiv)</td>
-            <td>Generic</td>
-            <td>Registry (DLT)</td>
-            <td><span class="dot dot--yes" aria-label="yes"></span></td>
-            <td><span class="dot dot--partial" aria-label="partial"></span></td>
-            <td><span class="dot dot--yes" aria-label="yes"></span></td>
-          </tr>
+          <tr class="us"><td>ConsentVid</td><td>Video</td><td>Consent-first</td><td><span class="pill y">yes</span></td><td><span class="pill y">yes</span></td><td><span class="pill y">yes</span></td></tr>
+          <tr><td>Sony FHIBE</td><td>Image</td><td>Consent-first</td><td><span class="pill p">partial</span></td><td><span class="pill n">no</span></td><td><span class="pill y">yes</span></td></tr>
+          <tr><td>Mozilla Common Voice</td><td>Audio</td><td>Consent-first</td><td><span class="pill n">no</span></td><td><span class="pill n">no</span></td><td><span class="pill p">partial</span></td></tr>
+          <tr><td>Spawning DNT</td><td>Generic</td><td>Opt-out</td><td><span class="pill n">no</span></td><td><span class="pill n">no</span></td><td><span class="pill n">n/a</span></td></tr>
+          <tr><td>DECORAIT</td><td>Generic</td><td>Registry (DLT)</td><td><span class="pill y">yes</span></td><td><span class="pill p">partial</span></td><td><span class="pill y">yes</span></td></tr>
         </tbody>
       </table>
-      </div>
-    </section>
+    </div>
+  </section>
 
-    <section class="section" id="why-now">
-      <p class="section-num"><em>05</em> &nbsp;·&nbsp; why now</p>
-      <h2>The substrate <em>finally exists</em>.</h2>
-      <div class="timing">
-        <div class="item">
-          <div class="when">Aug 2026</div>
-          <h4>EU AI Act, Art. 53</h4>
-          <p>GPAI providers must publish training-data summaries including rights-holder opt-outs. ConsentVid is compliance infrastructure — signed, machine-readable, auditable.</p>
-        </div>
-        <div class="item">
-          <div class="when">May 2025</div>
-          <h4>C2PA v2.2</h4>
-          <p>Added video provenance and AI-training-consent assertions. Sony shipped a C2PA video camera; OpenAI committed Sora outputs. The standard finally meets the format.</p>
-        </div>
-        <div class="item">
-          <div class="when">Mar 2025</div>
-          <h4>ATproto Discussion #3617</h4>
-          <p>The community proposed "User Intents for Data Reuse." Active, no implementation as of April 2026. ConsentVid ships a concrete, opinionated answer.</p>
-        </div>
-      </div>
-    </section>
+  <section id="why" class="wrap">
+    <p class="eyebrow">Why now</p>
+    <h2 class="h2">The substrate <span class="grad">finally exists</span>.</h2>
+    <div class="grid3">
+      <div class="wcard"><span class="when">Aug 2026</span><h3>EU AI Act, Art. 53</h3><p>GPAI providers must publish training-data summaries with rights-holder opt-outs. ConsentVid is compliance infrastructure — signed, machine-readable, auditable.</p></div>
+      <div class="wcard"><span class="when">May 2025</span><h3>C2PA v2.2</h3><p>Added video provenance and AI-training-consent assertions. Sony shipped a C2PA video camera; OpenAI committed Sora outputs.</p></div>
+      <div class="wcard"><span class="when">Mar 2025</span><h3>ATProto #3617</h3><p>The community proposed "User Intents for Data Reuse." Active, no implementation. ConsentVid ships a concrete answer.</p></div>
+    </div>
+  </section>
 
-    <section class="section" id="roadmap">
-      <p class="section-num"><em>06</em> &nbsp;·&nbsp; roadmap</p>
-      <h2>Shipped — <em>and what's next</em>.</h2>
-      <div class="roadmap">
-        <div class="roadmap-item">
-          <div class="when">Shipped</div>
-          <h4>Consent, provenance, storage, revocation.</h4>
-          <p>Signed video + consent records on the live network. Pluggable storage — Cloudflare R2, IPFS, PeerTube. Revocation re-sync (<span class="mono">consentvid resync</span>) plus a revocation feed. C2PA in-file provenance, so consent travels with the bytes after copying. <span class="mono">org.consentvid.*</span> lexicons published and DNS-resolvable, with client-side schema validation.</p>
-        </div>
-        <div class="roadmap-item">
-          <div class="when">Next</div>
-          <h4>Web uploader. First contributor community.</h4>
-          <p>A browser uploader for non-CLI contributors; hosted per-contributor Croissant manifests; a hosted AppView. Targeted onboarding of one motivated community — egocentric, sign language, or oral history — where consent-first is a feature, not a tax.</p>
-        </div>
-        <div class="roadmap-item">
-          <div class="when">Later</div>
-          <h4>Loader library. Compensation. Compliance.</h4>
-          <p>A <span class="mono">consentvid-loader</span> so a dataset consumer re-syncs revocations and verifies signatures in one call before each training run. Optional contributor compensation. Consent-receipt verification aligned with EU AI Act Article 53 documentation duties.</p>
-        </div>
-      </div>
-    </section>
+  <section id="roadmap" class="wrap">
+    <p class="eyebrow">Roadmap</p>
+    <h2 class="h2">Shipped — <span class="grad">and what's next</span>.</h2>
+    <div class="grid3">
+      <div class="rcard ship"><span class="rtag s">Shipped</span><h3>Consent, provenance, storage, revocation</h3><p>Signed records on the live network. R2 / IPFS / PeerTube storage. Revocation re-sync + feed. C2PA in-file provenance. Lexicons published, DNS-resolvable, client-side validated.</p></div>
+      <div class="rcard"><span class="rtag">Next</span><h3>Web uploader. First contributor community</h3><p>A browser uploader for non-CLI contributors; hosted manifests; a hosted AppView. Onboarding one motivated community — egocentric, sign language, or oral history.</p></div>
+      <div class="rcard"><span class="rtag">Later</span><h3>Loader. Compensation. Compliance</h3><p>A <span class="mono">consentvid-loader</span> that re-syncs revocations and verifies signatures in one call. Optional compensation. EU AI Act Art. 53 alignment.</p></div>
+    </div>
+  </section>
 
-    <section class="section" id="involved">
-      <p class="section-num"><em>07</em> &nbsp;·&nbsp; get involved</p>
-      <h2>Three ways <em>in</em>.</h2>
-      <div class="involved">
-        <div class="card">
-          <h4>Contribute video</h4>
-          <p>Have a Bluesky account. Install the CLI. Register clips with consent terms you choose. Revoke at any time. Your repo, your key.</p>
-          <a href="https://github.com/ekazakos/consentvid#usage">CLI quickstart →</a>
-        </div>
-        <div class="card">
-          <h4>Train on consented data</h4>
-          <p>Run the AppView. Filter by purpose, model class, modality. Export a Croissant-RAI manifest for citation. Re-sync revocations before each run.</p>
-          <a href="https://github.com/ekazakos/consentvid#appview--federated-indexing-across-users">AppView guide →</a>
-        </div>
-        <div class="card">
-          <h4>Collaborate</h4>
-          <p>Funders, academic collaborators, ATproto-stack contributors, dataset-tooling maintainers — get in touch.</p>
-          <a href="mailto:evangelos.kazakos@cvut.cz">evangelos.kazakos@cvut.cz</a>
-        </div>
+  <section id="involved" class="wrap">
+    <div class="band">
+      <h2>Three ways in.</h2>
+      <div class="igrid">
+        <div class="icard"><h3>Contribute video</h3><p>A Bluesky account, the CLI, consent terms you choose. Revoke any time. Your repo, your key.</p><a href="https://github.com/ekazakos/consentvid#usage">CLI quickstart →</a></div>
+        <div class="icard"><h3>Train on consented data</h3><p>Run the AppView, filter by purpose and model class, export a Croissant-RAI manifest, re-sync before each run.</p><a href="https://github.com/ekazakos/consentvid">AppView guide →</a></div>
+        <div class="icard"><h3>Collaborate</h3><p>Funders, academic collaborators, ATproto and dataset-tooling contributors — get in touch.</p><a href="mailto:evangelos.kazakos@cvut.cz">evangelos.kazakos@cvut.cz</a></div>
       </div>
-    </section>
-
-  </div>
+    </div>
+  </section>
 </main>
 
 <footer>
-  <div class="container">
-    <div>code: <a href="https://github.com/ekazakos/consentvid">github.com/ekazakos/consentvid</a> · Apache-2.0</div>
-    <div>a research project at <a href="https://www.fel.cvut.cz/en">CTU Prague</a></div>
+  <div class="wrap">
+    <div>code · <a href="https://github.com/ekazakos/consentvid">github.com/ekazakos/consentvid</a> · Apache-2.0</div>
     <div>2026 · v0.0.1</div>
   </div>
 </footer>
