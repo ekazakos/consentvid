@@ -162,9 +162,18 @@ consentvid publish-lexicons
 consentvid resolve-lexicon org.consentvid.consent
 consentvid resolve-lexicon org.consentvid.consent --did did:plc:…  # skip DNS
 
-# 4. Once resolvable, validate on write:
+# 4. Validate on write (see caveat below):
 export CONSENTVID_VALIDATE=1        # or pass --validate to register-video/attach-consent
 ```
+
+**Caveat (verified 2026-07-05):** even with the lexicons published and the DNS
+record propagated globally, `validate:true` currently fails against bsky.social
+with `Unknown lexicon type: org.consentvid.*`. The reference Bluesky PDS does not
+yet resolve external lexicons at validation time (the `_lexicon` DNS mechanism is
+a young part of the protocol and isn't implemented PDS-side). Keep
+`CONSENTVID_VALIDATE=0` for now — publishing still makes the lexicons discoverable
+by tools that *do* resolve them (including `resolve-lexicon`) and is
+forward-compatible for when PDS-side resolution lands.
 
 ATproto resolves a lexicon by domain authority: `org.consentvid.consent` →
 `consentvid.org` → the `_lexicon.consentvid.org` TXT record → a DID whose repo
