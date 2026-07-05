@@ -43,7 +43,7 @@
       "properties": {
         "kind": {
           "type": "string",
-          "knownValues": ["url", "local", "ipfs", "r2"]
+          "knownValues": ["url", "local", "ipfs", "r2", "peertube"]
         },
         "value": {"type": "string"}
       }

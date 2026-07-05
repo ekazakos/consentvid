@@ -61,6 +61,8 @@ def _summarize(consents: list[dict]) -> dict:
 
 
 def _file_object(video_uri: str, video: dict, consent_uri: str, consent: dict) -> dict:
+    from consentvid.storage import public_url
+
     storage = video.get("storageRef") or {}
     sha256_hex = (video.get("contentHash") or "").removeprefix("sha256-")
     rkey = video_uri.rsplit("/", 1)[-1]
@@ -69,7 +71,7 @@ def _file_object(video_uri: str, video: dict, consent_uri: str, consent: dict) -
         "@id": f"video-{rkey}",
         "name": video.get("title") or rkey,
         "description": video.get("description", ""),
-        "contentUrl": storage.get("value", ""),
+        "contentUrl": public_url(storage),
         "encodingFormat": "video/*",
         "sha256": sha256_hex,
         "cr:atUri": video_uri,

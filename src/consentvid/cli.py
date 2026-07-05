@@ -42,6 +42,17 @@ def get_client() -> Client:
     return client
 
 
+def _validate_records(override: bool | None = None) -> bool:
+    """Whether to ask the PDS to validate records against published lexicons.
+
+    Defaults to CONSENTVID_VALIDATE (off until lexicons are resolvable); an
+    explicit --validate/--no-validate flag overrides.
+    """
+    if override is not None:
+        return override
+    return os.environ.get("CONSENTVID_VALIDATE", "0").lower() in ("1", "true", "yes")
+
+
 def hash_file(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as f:
@@ -137,15 +148,18 @@ def whoami():
 @click.option(
     "--storage-kind",
     default="local",
-    type=click.Choice(["local", "url", "ipfs", "r2"]),
+    type=click.Choice(["local", "url", "ipfs", "r2", "peertube"]),
 )
 @click.option(
     "--storage-value",
     default=None,
-    help="Pointer to where the bytes live; defaults to the local path.",
+    help="Pointer to where the bytes live; defaults to the local path. For r2/ipfs/"
+    "peertube, omit to upload and let the backend fill it in.",
 )
+@click.option("--validate/--no-validate", "validate", default=None,
+              help="Validate against the published lexicon (default: CONSENTVID_VALIDATE).")
 def register_video(
-    video_path, title, description, language, tags, storage_kind, storage_value
+    video_path, title, description, language, tags, storage_kind, storage_value, validate
 ):
     """Compute hash + metadata and create a video record on the user's PDS."""
     client = get_client()
@@ -158,10 +172,22 @@ def register_video(
         except RuntimeError as e:
             raise click.ClickException(str(e))
         click.echo(f"Uploaded to R2: {storage_value}")
+    elif storage_kind == "ipfs" and not storage_value:
+        from consentvid.storage import add_to_ipfs
+        try:
+            storage_value = add_to_ipfs(video_path)
+        except RuntimeError as e:
+            raise click.ClickException(str(e))
+        click.echo(f"Added to IPFS: {storage_value}")
+    elif storage_kind == "peertube" and not storage_value:
+        from consentvid.storage import upload_to_peertube
+        try:
+            storage_value = upload_to_peertube(video_path, title)
+        except RuntimeError as e:
+            raise click.ClickException(str(e))
+        click.echo(f"Uploaded to PeerTube: {storage_value}")
     elif storage_kind == "url" and not storage_value:
         raise click.ClickException("--storage-kind url requires --storage-value <https://...>")
-    elif storage_kind == "ipfs" and not storage_value:
-        raise click.ClickException("--storage-kind ipfs requires --storage-value <CID>")
     elif storage_kind == "local":
         storage_value = storage_value or str(video_path.resolve())
 
@@ -186,7 +212,7 @@ def register_video(
         {
             "repo": client.me.did,
             "collection": VIDEO_NSID,
-            "validate": False,
+            "validate": _validate_records(validate),
             "record": record,
         }
     )
@@ -231,6 +257,8 @@ def register_video(
     default=False,
     help="Mark consent as non-revocable (default: revocable).",
 )
+@click.option("--validate/--no-validate", "validate", default=None,
+              help="Validate against the published lexicon (default: CONSENTVID_VALIDATE).")
 def attach_consent(
     video_uri,
     modalities,
@@ -239,6 +267,7 @@ def attach_consent(
     expires_at,
     compensation,
     non_revocable,
+    validate,
 ):
     """Create a consent receipt referencing a video record by AT-URI."""
     client = get_client()
@@ -258,7 +287,7 @@ def attach_consent(
         {
             "repo": client.me.did,
             "collection": CONSENT_NSID,
-            "validate": False,
+            "validate": _validate_records(validate),
             "record": record,
         }
     )
@@ -563,6 +592,87 @@ def resync(input_path, write_path):
         write_path.write_text(json.dumps(filtered, indent=2))
         dropped = len(manifest.get("distribution", [])) - len(filtered["distribution"])
         click.echo(f"\nWrote {write_path} ({dropped} clip(s) dropped).")
+
+
+@main.command("publish-lexicons")
+@click.option("--nsid", "nsids", multiple=True,
+              help="Publish only these NSIDs (default: all lexicons in the repo).")
+def publish_lexicons(nsids):
+    """Publish org.consentvid.* lexicons as com.atproto.lexicon.schema records.
+
+    Writes one schema record per lexicon (rkey = the NSID) to your repo, then
+    prints the DNS TXT record you must add so the network can resolve them. Once
+    the DNS record is live you can write records with validate:true (set
+    CONSENTVID_VALIDATE=1 or pass --validate).
+    """
+    from consentvid import lexicons as lx
+
+    client = get_client()
+    targets = list(nsids) or lx.discover_lexicons()
+    if not targets:
+        raise click.ClickException("No lexicon files found in the repo.")
+
+    for nsid in targets:
+        try:
+            lexicon = lx.load_lexicon(nsid)
+        except FileNotFoundError as e:
+            raise click.ClickException(str(e))
+        record = lx.build_schema_record(lexicon)
+        client.com.atproto.repo.put_record(
+            {
+                "repo": client.me.did,
+                "collection": lx.SCHEMA_COLLECTION,
+                "rkey": nsid,
+                "validate": False,
+                "record": record,
+            }
+        )
+        click.echo(f"Published {nsid}  ->  at://{client.me.did}/{lx.SCHEMA_COLLECTION}/{nsid}")
+
+    authorities = sorted({lx.nsid_authority(n) for n in targets})
+    click.echo("\nNext step — add these DNS TXT record(s) at your registrar:")
+    for auth in authorities:
+        click.echo(f'  _lexicon.{auth}  IN TXT  "did={client.me.did}"')
+    click.echo(
+        "\nUntil DNS resolves, keep writing with validate:false. For production, "
+        "consider a dedicated DID for the lexicon authority rather than a personal "
+        "bsky.social account. Verify with: consentvid resolve-lexicon <nsid>"
+    )
+
+
+@main.command("resolve-lexicon")
+@click.argument("nsid")
+@click.option("--did", "did_override", default=None,
+              help="Skip DNS and fetch the schema record from this DID directly.")
+def resolve_lexicon(nsid, did_override):
+    """Resolve a lexicon the way a validator would: DNS TXT -> DID -> schema record."""
+    from consentvid import lexicons as lx
+
+    client = get_client()
+    if did_override:
+        did = did_override
+        click.echo(f"Using DID override: {did}")
+    else:
+        click.echo(f"Looking up DNS TXT {lx.dns_record_name(nsid)} ...")
+        did = lx.resolve_did_via_dns(nsid)
+        if not did:
+            raise click.ClickException(
+                f"No _lexicon TXT record found for {lx.nsid_authority(nsid)}. "
+                "Publish it (see publish-lexicons) or pass --did to test the record fetch."
+            )
+        click.echo(f"  -> did={did}")
+
+    try:
+        resp = client.com.atproto.repo.get_record(
+            {"repo": did, "collection": lx.SCHEMA_COLLECTION, "rkey": nsid}
+        )
+    except Exception as e:  # noqa: BLE001
+        raise click.ClickException(f"Schema record not found for {nsid} in {did}: {e}")
+    value = _record_value_to_dict(resp.value)
+    click.echo(f"Resolved {nsid}:")
+    click.echo(f"  uri:  {resp.uri}")
+    click.echo(f"  id:   {value.get('id')}")
+    click.echo(f"  defs: {list((value.get('defs') or {}).keys())}")
 
 
 @main.group()

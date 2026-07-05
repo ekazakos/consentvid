@@ -117,6 +117,61 @@ signer will not chain to the C2PA trust list — a reader flags it untrusted.
 Production must swap in a CA-issued document-signing certificate at those paths;
 nothing else changes.
 
+## Storage backends
+
+ConsentVid is **non-custodial**: the video record commits only to a content hash
+and a `storageRef` pointer — the platform never has to host the bytes. That's the
+economic core (kilobyte records, not petabytes of video) and it keeps liability
+with the contributor, not you. Backends are pluggable; pass `--storage-kind` and
+omit `--storage-value` to upload:
+
+```bash
+# Cloudflare R2 (S3-compatible, zero egress). Needs the CONSENTVID_R2_* env vars.
+consentvid register-video clip.mp4 --title "…" --storage-kind r2
+
+# IPFS. The CID is content-addressed, so it matches the record's SHA-256 by
+# construction. Persistence needs a pin: set CONSENTVID_PINATA_JWT for a hosted
+# pinning service, or run a local Kubo node (CONSENTVID_IPFS_API). Note: IPFS is
+# not free-forever storage — unpinned content is garbage-collected.
+consentvid register-video clip.mp4 --title "…" --storage-kind ipfs
+
+# PeerTube (federated video host: transcoding + adaptive + P2P delivery). Needs
+# CONSENTVID_PEERTUBE_URL / _USERNAME / _PASSWORD.
+consentvid register-video clip.mp4 --title "…" --storage-kind peertube
+```
+
+Manifests dereference each backend automatically (an IPFS CID becomes a
+`CONSENTVID_IPFS_GATEWAY` URL; r2/peertube/url pass through). See `.env.example`
+for all backend variables.
+
+## Publishing lexicons (schema validation)
+
+Until the `org.consentvid.*` lexicons are *resolvable* on the network, records
+are written with `validate:false` — the PDS can't find the schema to check
+against. Publishing them makes `org.consentvid.*` a first-class, validated
+namespace instead of a placeholder.
+
+```bash
+# 1. Write each lexicon as a com.atproto.lexicon.schema record (rkey = the NSID).
+consentvid publish-lexicons
+
+# 2. Add the DNS TXT record it prints, e.g.:
+#      _lexicon.consentvid.org  IN TXT  "did=did:plc:…"
+
+# 3. Verify resolution (DNS TXT -> DID -> schema record):
+consentvid resolve-lexicon org.consentvid.consent
+consentvid resolve-lexicon org.consentvid.consent --did did:plc:…  # skip DNS
+
+# 4. Once resolvable, validate on write:
+export CONSENTVID_VALIDATE=1        # or pass --validate to register-video/attach-consent
+```
+
+ATproto resolves a lexicon by domain authority: `org.consentvid.consent` →
+`consentvid.org` → the `_lexicon.consentvid.org` TXT record → a DID whose repo
+holds the schema records. For production, point the authority at a dedicated DID
+rather than a personal bsky.social account. (DNS-based lexicon resolution is a
+young part of the protocol — verify the record shape against the current spec.)
+
 The exported manifest conforms to [Croissant 1.0](http://mlcommons.org/croissant/)
 with the [RAI extension](http://mlcommons.org/croissant/RAI/). Each `cr:FileObject`
 embeds a `cr:consentReceipt` with the signed ATproto URI of the consent record,
@@ -178,12 +233,13 @@ The pyproject is set to require >=3.10. The development venv was built with
 
 ## What's next (after this MVP works)
 
-Done: Croissant-RAI exporter, AppView indexer, R2 storage, revocation re-sync
-(`resync` + `appview revocations`), C2PA in-file provenance (`embed-c2pa`).
+Done: Croissant-RAI exporter, AppView indexer, R2 / IPFS / PeerTube storage
+backends, revocation re-sync (`resync` + `appview revocations`), C2PA in-file
+provenance (`embed-c2pa`), lexicon publishing (`publish-lexicons`).
 
 Remaining:
 - C2PA with a CA-issued (trust-list-chaining) certificate instead of the
   self-signed prototype signer.
-- IPFS pin and PeerTube push storage backends (only R2 is wired today).
-- Publish the `org.consentvid.*` lexicons at a resolvable URL so records can be
-  written with `validate: true`.
+- Add the `_lexicon.consentvid.org` DNS TXT record so lexicons resolve
+  network-wide, then flip `CONSENTVID_VALIDATE=1` (records are published; only
+  the DNS step and a dedicated authority DID remain).
