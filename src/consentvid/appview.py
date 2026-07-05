@@ -17,6 +17,8 @@ from typing import Callable
 
 import websockets
 
+from consentvid.validate import validate_record
+
 
 JETSTREAM_URL = "wss://jetstream2.us-east.bsky.network/subscribe"
 VIDEO_NSID = "org.consentvid.video"
@@ -175,12 +177,18 @@ async def index_loop(
             if op in ("create", "update"):
                 cid = commit.get("cid", "")
                 value = commit.get("record", {}) or {}
+                if collection not in (VIDEO_NSID, CONSENT_NSID):
+                    continue
+                # Validate on ingest: contributors may not use our CLI, so the
+                # index is the layer that keeps malformed records out.
+                if validate_record(collection, value):
+                    if on_event:
+                        on_event("invalid", uri)
+                    continue
                 if collection == VIDEO_NSID:
                     upsert_video(conn, uri, did, rkey, cid, value)
-                elif collection == CONSENT_NSID:
-                    upsert_consent(conn, uri, did, rkey, cid, value)
                 else:
-                    continue
+                    upsert_consent(conn, uri, did, rkey, cid, value)
             elif op == "delete":
                 mark_deleted(conn, uri)
             else:

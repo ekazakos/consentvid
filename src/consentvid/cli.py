@@ -12,6 +12,7 @@ from atproto import Client
 from dotenv import load_dotenv
 
 from consentvid.croissant import build_manifest
+from consentvid.validate import validate_record
 
 
 VIDEO_NSID = "org.consentvid.video"
@@ -51,6 +52,17 @@ def _validate_records(override: bool | None = None) -> bool:
     if override is not None:
         return override
     return os.environ.get("CONSENTVID_VALIDATE", "0").lower() in ("1", "true", "yes")
+
+
+def _check_local(nsid: str, record: dict) -> None:
+    """Validate a record against its lexicon locally before writing. Since
+    bsky.social won't validate custom lexicons on write, this is where we catch
+    malformed records — before they hit the network."""
+    errors = validate_record(nsid, record)
+    if errors:
+        raise click.ClickException(
+            "Record failed local lexicon validation:\n  - " + "\n  - ".join(errors)
+        )
 
 
 def hash_file(path: Path) -> str:
@@ -208,6 +220,7 @@ def register_video(
     if tags:
         record["tags"] = list(tags)
     record.update(probe_video(video_path))
+    _check_local(VIDEO_NSID, record)
     resp = client.com.atproto.repo.create_record(
         {
             "repo": client.me.did,
@@ -283,6 +296,7 @@ def attach_consent(
     }
     if expires_at:
         record["expiresAt"] = expires_at
+    _check_local(CONSENT_NSID, record)
     resp = client.com.atproto.repo.create_record(
         {
             "repo": client.me.did,
@@ -707,7 +721,11 @@ def appview_backfill(handle_or_did):
             resp = client.com.atproto.repo.list_records(params)
             for r in resp.records:
                 rkey = r.uri.rsplit("/", 1)[-1]
-                ingest(conn, r.uri, did, rkey, str(r.cid), _record_value_to_dict(r.value))
+                value = _record_value_to_dict(r.value)
+                if validate_record(collection, value):
+                    click.echo(f"  skipped (invalid): {r.uri}")
+                    continue
+                ingest(conn, r.uri, did, rkey, str(r.cid), value)
                 counts[key] += 1
             cursor = resp.cursor
             if not cursor:
