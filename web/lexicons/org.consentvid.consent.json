@@ -8,7 +8,7 @@
       "key": "tid",
       "record": {
         "type": "object",
-        "required": ["videoUri", "modalities", "purposes", "modelClasses", "compensation", "revocable", "createdAt"],
+        "required": ["videoUri", "modalities", "purposes", "modelClasses", "compensation", "revocable", "authorshipAttested", "createdAt"],
         "properties": {
           "videoUri": {
             "type": "string",
@@ -49,6 +49,20 @@
             "knownValues": ["none", "creditOnly", "monetary"]
           },
           "revocable": {"type": "boolean"},
+          "authorshipAttested": {
+            "type": "boolean",
+            "description": "The contributor affirms, under their signing key, that they recorded this video themselves (or are otherwise its rightful author) and are authorized to grant this consent. A consent receipt is invalid unless this is true; uploading someone else's video and consenting to its use would be unlawful."
+          },
+          "rightsBasis": {
+            "type": "string",
+            "knownValues": ["ownRecording", "licensed", "otherRightsHolder"],
+            "description": "Basis on which the contributor holds the right to grant consent: 'ownRecording' = they captured it, 'licensed' = licensed from the creator, 'otherRightsHolder' = other documented basis."
+          },
+          "captureProvenance": {
+            "type": "string",
+            "knownValues": ["attested", "selfAttested", "unverified"],
+            "description": "Strength of the capture-provenance guarantee. 'attested' = capture-time cryptographic provenance (e.g. C2PA/CAWG) binds the recording to the contributor's DID; 'selfAttested' = signed authorship attestation only; 'unverified' = neither."
+          },
           "createdAt": {"type": "string", "format": "datetime"}
         }
       }

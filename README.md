@@ -48,8 +48,14 @@ consentvid register-video /path/to/clip.mp4 \
     --title "Demo clip" \
     --tag cooking --tag egocentric
 
-# Returns an at:// URI for the video record. Use it to attach consent:
+# Returns an at:// URI for the video record. Use it to attach consent.
+# --attest-authorship is REQUIRED: you affirm (signed by your repo key) that you
+# recorded this video yourself and may grant consent. Attaching consent to a
+# clip you did not make — e.g. a re-uploaded YouTube video — would be unlawful,
+# so the CLI refuses without it. If your right comes from a licence instead of
+# having filmed it, add --rights-basis licensed.
 consentvid attach-consent at://did:plc:.../org.consentvid.video/<rkey> \
+    --attest-authorship \
     --modality video --modality audio \
     --purpose training --purpose evaluation \
     --model-class academic --model-class openWeights \

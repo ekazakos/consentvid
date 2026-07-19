@@ -55,6 +55,9 @@ CREATE TABLE IF NOT EXISTS consents (
   expires_at    TEXT,
   compensation  TEXT,
   revocable     INTEGER,
+  authorship_attested INTEGER,
+  rights_basis  TEXT,
+  capture_provenance  TEXT,
   created_at    TEXT,
   indexed_at    TEXT NOT NULL,
   revoked_at    TEXT
@@ -76,7 +79,26 @@ def connect() -> sqlite3.Connection:
     conn = sqlite3.connect(str(p))
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    _migrate(conn)
     return conn
+
+
+def _migrate(conn) -> None:
+    """Add columns introduced after a database was first created.
+
+    `CREATE TABLE IF NOT EXISTS` won't alter a table that already exists, so an
+    older appview.db is missing the capture-provenance columns. Add any that are
+    absent; new databases already have them from SCHEMA.
+    """
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(consents)")}
+    for name, decl in (
+        ("authorship_attested", "INTEGER"),
+        ("rights_basis", "TEXT"),
+        ("capture_provenance", "TEXT"),
+    ):
+        if name not in cols:
+            conn.execute(f"ALTER TABLE consents ADD COLUMN {name} {decl}")
+    conn.commit()
 
 
 def _now() -> str:
@@ -115,13 +137,17 @@ def upsert_consent(conn, uri, did, rkey, cid, value):
         """
         INSERT INTO consents (uri, did, rkey, cid, video_uri, modalities, purposes,
                               model_classes, expires_at, compensation, revocable,
+                              authorship_attested, rights_basis, capture_provenance,
                               created_at, indexed_at, revoked_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
         ON CONFLICT(uri) DO UPDATE SET
           cid=excluded.cid, video_uri=excluded.video_uri,
           modalities=excluded.modalities, purposes=excluded.purposes,
           model_classes=excluded.model_classes, expires_at=excluded.expires_at,
           compensation=excluded.compensation, revocable=excluded.revocable,
+          authorship_attested=excluded.authorship_attested,
+          rights_basis=excluded.rights_basis,
+          capture_provenance=excluded.capture_provenance,
           created_at=excluded.created_at, indexed_at=excluded.indexed_at,
           revoked_at=NULL
         """,
@@ -134,6 +160,9 @@ def upsert_consent(conn, uri, did, rkey, cid, value):
             value.get("expiresAt"),
             value.get("compensation", "none"),
             1 if value.get("revocable") else 0,
+            1 if value.get("authorshipAttested") else 0,
+            value.get("rightsBasis"),
+            value.get("captureProvenance"),
             value.get("createdAt"),
             _now(),
         ),

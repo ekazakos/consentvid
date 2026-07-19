@@ -270,6 +270,27 @@ def register_video(
     default=False,
     help="Mark consent as non-revocable (default: revocable).",
 )
+@click.option(
+    "--attest-authorship",
+    "attest",
+    is_flag=True,
+    default=False,
+    help="REQUIRED. Affirm you recorded this video yourself (or are its rightful "
+    "author) and are authorized to grant consent. Signed by your repo key.",
+)
+@click.option(
+    "--rights-basis",
+    default="ownRecording",
+    type=click.Choice(["ownRecording", "licensed", "otherRightsHolder"]),
+    help="Basis for your right to grant consent (default: ownRecording).",
+)
+@click.option(
+    "--capture-provenance",
+    default="selfAttested",
+    type=click.Choice(["attested", "selfAttested", "unverified"]),
+    help="Capture-provenance tier (default: selfAttested; 'attested' is reserved "
+    "for capture-time cryptographic provenance such as C2PA/CAWG).",
+)
 @click.option("--validate/--no-validate", "validate", default=None,
               help="Validate against the published lexicon (default: CONSENTVID_VALIDATE).")
 def attach_consent(
@@ -280,9 +301,21 @@ def attach_consent(
     expires_at,
     compensation,
     non_revocable,
+    attest,
+    rights_basis,
+    capture_provenance,
     validate,
 ):
     """Create a consent receipt referencing a video record by AT-URI."""
+    if not attest:
+        raise click.ClickException(
+            "Consent requires an explicit authorship attestation. Re-run with "
+            "--attest-authorship to affirm you recorded this video yourself (or "
+            "are its rightful author) and are authorized to grant this consent.\n"
+            "Uploading someone else's video (e.g. a YouTube clip) and consenting "
+            "to its use would be unlawful. If your right comes from a licence "
+            "rather than having filmed it, also pass --rights-basis licensed."
+        )
     client = get_client()
     record = {
         "$type": CONSENT_NSID,
@@ -292,6 +325,9 @@ def attach_consent(
         "modelClasses": list(model_classes),
         "compensation": compensation,
         "revocable": not non_revocable,
+        "authorshipAttested": True,
+        "rightsBasis": rights_basis,
+        "captureProvenance": capture_provenance,
         "createdAt": now_iso(),
     }
     if expires_at:
@@ -526,6 +562,7 @@ _RESYNC_MARK = {
     "valid": "ok",
     "revoked": "REVOKED",
     "expired": "EXPIRED",
+    "unattested": "UNATTEST",
     "unknown": "?",
 }
 
@@ -539,7 +576,15 @@ _RESYNC_MARK = {
     default=None,
     help="Write a filtered manifest with revoked/expired clips removed (manifest input only).",
 )
-def resync(input_path, write_path):
+@click.option(
+    "--min-provenance",
+    "min_provenance",
+    default=None,
+    type=click.Choice(["unverified", "selfAttested", "attested"]),
+    help="Drop clips whose live consent is not authorship-attested or is below "
+    "this capture-provenance tier. Default: no provenance filtering.",
+)
+def resync(input_path, write_path, min_provenance):
     """Re-check consent against the live network and report what must be dropped.
 
     INPUT_PATH is either a Croissant manifest (JSON) or a C2PA-embedded video
@@ -587,19 +632,22 @@ def resync(input_path, write_path):
             click.echo("(--write applies to manifest input only; ignored.)")
         return
 
-    results = rs.resync_manifest(client, manifest)
+    results = rs.resync_manifest(client, manifest, min_provenance=min_provenance)
     if not results:
         click.echo("No FileObjects with consent receipts in this manifest.")
         return
     for r in results:
-        click.echo(f"  [{_RESYNC_MARK[r['status']]:>7}] {r['name']}  {r['consentUri']}")
+        prov = r.get("captureProvenance") or "n/a"
+        click.echo(f"  [{_RESYNC_MARK[r['status']]:>8}] {r['name']}  ({prov})  {r['consentUri']}")
     counts = {s: sum(1 for r in results if r["status"] == s) for s in _RESYNC_MARK}
     click.echo()
-    click.echo(f"valid:   {counts[rs.VALID]}")
-    click.echo(f"revoked: {counts[rs.REVOKED]}")
-    click.echo(f"expired: {counts[rs.EXPIRED]}")
+    click.echo(f"valid:      {counts[rs.VALID]}")
+    click.echo(f"revoked:    {counts[rs.REVOKED]}")
+    click.echo(f"expired:    {counts[rs.EXPIRED]}")
+    if counts[rs.UNATTESTED]:
+        click.echo(f"unattested: {counts[rs.UNATTESTED]} (below --min-provenance)")
     if counts[rs.UNKNOWN]:
-        click.echo(f"unknown: {counts[rs.UNKNOWN]} (not dropped)")
+        click.echo(f"unknown:    {counts[rs.UNKNOWN]} (not dropped)")
     if write_path:
         filtered = rs.filter_manifest(manifest, results, now_iso())
         write_path.parent.mkdir(parents=True, exist_ok=True)
@@ -816,10 +864,12 @@ def appview_revocations(since, as_json):
 @appview.command("query")
 @click.option("--purpose", multiple=True, help="Filter by purpose. Repeatable.")
 @click.option("--model-class", "model_classes", multiple=True, help="Filter by model class. Repeatable.")
+@click.option("--capture-provenance", "capture_provenance", multiple=True,
+              help="Filter by capture-provenance tier (attested/selfAttested/unverified). Repeatable.")
 @click.option("--did", default=None, help="Filter by contributor DID.")
 @click.option("--include-revoked", is_flag=True, default=False)
 @click.option("--limit", default=20, type=int)
-def appview_query(purpose, model_classes, did, include_revoked, limit):
+def appview_query(purpose, model_classes, capture_provenance, did, include_revoked, limit):
     """Query indexed consent receipts."""
     from consentvid import appview as av
 
@@ -830,10 +880,14 @@ def appview_query(purpose, model_classes, did, include_revoked, limit):
     if did:
         where.append("c.did = ?")
         args.append(did)
+    if capture_provenance:
+        where.append(f"c.capture_provenance IN ({','.join('?' * len(capture_provenance))})")
+        args.extend(capture_provenance)
     where_sql = "WHERE " + " AND ".join(where) if where else ""
     rows = conn.execute(
         f"""
         SELECT c.uri, c.did, c.video_uri, c.purposes, c.model_classes, c.modalities,
+               c.capture_provenance, c.authorship_attested,
                c.created_at, v.title, v.duration_ms
         FROM consents c
         LEFT JOIN videos v ON v.uri = c.video_uri
@@ -865,6 +919,10 @@ def appview_query(purpose, model_classes, did, include_revoked, limit):
         click.echo(f"  purposes:      {r['purposes']}")
         click.echo(f"  model_classes: {r['model_classes']}")
         click.echo(f"  modalities:    {r['modalities']}")
+        click.echo(
+            f"  provenance:    {r['capture_provenance']} "
+            f"(authorshipAttested={bool(r['authorship_attested'])})"
+        )
         click.echo()
 
 

@@ -19,6 +19,8 @@ from datetime import datetime
 
 from consentvid.lexicons import load_lexicon
 
+CONSENT_NSID = "org.consentvid.consent"
+
 
 def validate_record(nsid: str, record: dict) -> list[str]:
     """Validate a record dict against the main record schema of its lexicon.
@@ -34,7 +36,20 @@ def validate_record(nsid: str, record: dict) -> list[str]:
     schema = main.get("record")
     if not isinstance(schema, dict):
         return [f"lexicon {nsid} has no main record schema"]
-    return _validate_object(schema, record, defs, "")
+    errors = _validate_object(schema, record, defs, "")
+    # Domain policy beyond the schema subset: a consent receipt is only
+    # meaningful if the contributor affirmatively attests authorship. The
+    # lexicon can require the field be present but not that its value be true, so
+    # we enforce authorshipAttested == true here. This single check gates every
+    # path — CLI writes (_check_local), AppView backfill, and live Jetstream
+    # ingest all run through validate_record — so an unattested consent (e.g. a
+    # re-uploaded YouTube clip) never enters the system.
+    if nsid == CONSENT_NSID and record.get("authorshipAttested") is not True:
+        errors.append(
+            "authorshipAttested must be true: a consent receipt requires an "
+            "explicit authorship attestation"
+        )
+    return errors
 
 
 def _validate_object(schema: dict, value, defs: dict, path: str) -> list[str]:

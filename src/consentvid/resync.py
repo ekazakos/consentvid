@@ -20,8 +20,13 @@ from datetime import datetime, timezone
 VALID = "valid"
 REVOKED = "revoked"
 EXPIRED = "expired"
+UNATTESTED = "unattested"
 UNKNOWN = "unknown"
-DROP_STATUSES = (REVOKED, EXPIRED)
+DROP_STATUSES = (REVOKED, EXPIRED, UNATTESTED)
+
+# Capture-provenance tiers, weakest to strongest. Used to enforce a consumer's
+# minimum bar in resync_manifest.
+PROVENANCE_ORDER = {"unverified": 0, "selfAttested": 1, "attested": 2}
 
 
 def _parse_dt(s):
@@ -47,44 +52,72 @@ def iter_file_objects(manifest: dict):
             yield fo
 
 
-def consent_status(client, consent_uri, expires_at=None, now=None) -> str:
-    """Classify a consent receipt as valid / revoked / expired / unknown.
+def fetch_consent(client, consent_uri, expires_at=None, now=None):
+    """Classify a consent receipt and return (status, live_record_or_None).
 
-    ``unknown`` means a network error or malformed URI — the caller should NOT
-    drop the clip on unknown (fail-open on transient errors, not on revocation).
+    status is valid / revoked / expired / unknown. On ``valid`` the live record
+    dict is returned so callers can inspect the *authoritative* authorship
+    attestation and capture-provenance tier rather than trusting a manifest's
+    embedded copy. ``unknown`` means a network error or malformed URI — the
+    caller should NOT drop the clip (fail-open on transient errors).
     """
     now = now or datetime.now(timezone.utc)
     exp = _parse_dt(expires_at)
     if exp and exp <= now:
-        return EXPIRED
+        return EXPIRED, None
     try:
         did, collection, rkey = parse_at_uri(consent_uri)
     except ValueError:
-        return UNKNOWN
+        return UNKNOWN, None
     try:
-        client.com.atproto.repo.get_record(
+        resp = client.com.atproto.repo.get_record(
             {"repo": did, "collection": collection, "rkey": rkey}
         )
     except Exception as e:  # noqa: BLE001 — the SDK raises many error types
         msg = str(e).lower()
         if "recordnotfound" in msg or "could not locate" in msg or "not find record" in msg:
-            return REVOKED
-        return UNKNOWN
-    return VALID
+            return REVOKED, None
+        return UNKNOWN, None
+    # Lazy import avoids a module-load cycle (cli imports resync at call time).
+    from consentvid.cli import _record_value_to_dict
+
+    return VALID, _record_value_to_dict(resp.value)
 
 
-def resync_manifest(client, manifest: dict, now=None) -> list[dict]:
-    """Re-check every FileObject's consent receipt. Returns one result dict per
-    clip with keys: id, name, consentUri, videoUri, status."""
+def consent_status(client, consent_uri, expires_at=None, now=None) -> str:
+    """Classify a consent receipt as valid / revoked / expired / unknown."""
+    return fetch_consent(client, consent_uri, expires_at, now=now)[0]
+
+
+def resync_manifest(client, manifest: dict, now=None, min_provenance=None) -> list[dict]:
+    """Re-check every FileObject's consent receipt against the live network.
+
+    Returns one result dict per clip with keys: id, name, consentUri, videoUri,
+    status, authorshipAttested, captureProvenance.
+
+    If ``min_provenance`` is set (a PROVENANCE_ORDER key), a clip that is
+    otherwise valid is marked ``unattested`` — and thus dropped by
+    filter_manifest — when its live consent isn't authorship-attested or its
+    capture-provenance tier is below the bar. Revoked/expired/unknown statuses
+    are never overridden.
+    """
+    threshold = PROVENANCE_ORDER.get(min_provenance) if min_provenance else None
     results = []
     for fo in iter_file_objects(manifest):
         receipt = fo.get("cr:consentReceipt") or {}
         consent_uri = receipt.get("atUri")
-        status = (
-            consent_status(client, consent_uri, receipt.get("expiresAt"), now=now)
-            if consent_uri
-            else UNKNOWN
-        )
+        if consent_uri:
+            status, live = fetch_consent(client, consent_uri, receipt.get("expiresAt"), now=now)
+        else:
+            status, live = UNKNOWN, None
+        # Prefer the authoritative live record; fall back to the manifest's
+        # embedded copy when we couldn't fetch it.
+        src = live if live is not None else receipt
+        attested = src.get("authorshipAttested")
+        provenance = src.get("captureProvenance")
+        if status == VALID and threshold is not None:
+            if not attested or PROVENANCE_ORDER.get(provenance, 0) < threshold:
+                status = UNATTESTED
         results.append(
             {
                 "id": fo.get("@id"),
@@ -92,6 +125,8 @@ def resync_manifest(client, manifest: dict, now=None) -> list[dict]:
                 "consentUri": consent_uri,
                 "videoUri": fo.get("cr:atUri"),
                 "status": status,
+                "authorshipAttested": attested,
+                "captureProvenance": provenance,
             }
         )
     return results
