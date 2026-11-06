@@ -45,8 +45,8 @@
       <div class="rhead"><span class="rtitle">consent receipt</span><span class="seal">✓ signed</span></div>
       <div class="rbody">
         <div class="row"><span class="k">did</span><span class="v">did:plc:u73ld57pmwsta45y45uitdfi</span></div>
-        <div class="row"><span class="k">video</span><span class="v"><span class="pre">at://</span>…/<span class="nsid">org.consentvid.video</span>/3mkm6izdo6u2o</span></div>
-        <div class="row"><span class="k">consent</span><span class="v"><span class="pre">at://</span>…/<span class="nsid">org.consentvid.consent</span>/3mkm6zmigrx2v</span></div>
+        <div class="row"><span class="k">video</span><span class="v"><span class="pre">at://</span>…/<span class="nsid">org.consentvid.video</span>/3mkmcxcautu2j</span></div>
+        <div class="row"><span class="k">consent</span><span class="v"><span class="pre">at://</span>…/<span class="nsid">org.consentvid.consent</span>/3mqz72t5bhm2a</span></div>
         <div class="row"><span class="k">terms</span><span class="v">training, evaluation · academic, openWeights · revocable=true</span></div>
       </div>
     </div>
@@ -80,19 +80,19 @@
     <h2 class="h2">Working today, <span class="grad">on the live network</span>.</h2>
     <p class="sub">Registered, validated, and revoked on live ATProto. Bytes on R2, IPFS, or PeerTube; the platform holds only signed records and hashes.</p>
     <div class="livecard">
-      <p style="color:var(--muted);margin:0 0 4px;font-size:15px">The AppView indexes Jetstream in real time (validating on ingest); datasets export a Croissant-RAI manifest; consumers re-sync revocations with <span class="mono">consentvid resync</span>; consent can be embedded in the bytes as a signed C2PA manifest; and the <span class="mono">org.consentvid.*</span> lexicons are published and DNS-resolvable.</p>
+      <p style="color:var(--muted);margin:0 0 4px;font-size:15px">The AppView indexes Jetstream in real time (validating on ingest); datasets export a Croissant-RAI manifest; consumers re-sync with <span class="mono">consentvid resync</span>, which verifies every receipt against the contributor's signed repo commit and Merkle proof — trusting no server; consent can be embedded in the bytes as a signed C2PA manifest; and the <span class="mono">org.consentvid.*</span> lexicons are published and DNS-resolvable.</p>
       <div class="arts">
         <div class="art"><div class="lab">contributor did</div><div class="val">did:plc:u73ld57pmwsta45y45uitdfi</div></div>
         <div class="art"><div class="lab">content hash</div><div class="val">sha256-29506f94…e1e3e360</div></div>
-        <div class="art"><div class="lab">video · at-uri</div><div class="val"><span style="color:var(--faint)">at://</span>…/<span class="accent">org.consentvid.video</span>/3mkm6izdo6u2o</div></div>
-        <div class="art"><div class="lab">consent · at-uri</div><div class="val"><span style="color:var(--faint)">at://</span>…/<span class="accent">org.consentvid.consent</span>/3mkm6zmigrx2v</div></div>
+        <div class="art"><div class="lab">video · at-uri</div><div class="val"><span style="color:var(--faint)">at://</span>…/<span class="accent">org.consentvid.video</span>/3mkmcxcautu2j</div></div>
+        <div class="art"><div class="lab">consent · at-uri</div><div class="val"><span style="color:var(--faint)">at://</span>…/<span class="accent">org.consentvid.consent</span>/3mqz72t5bhm2a</div></div>
       </div>
       <div class="code">
         <div class="chr"><i></i><i></i><i></i></div>
         <pre><span class="ky">"@type"</span>: <span class="st">"sc:Dataset"</span>, <span class="ky">"conformsTo"</span>: <span class="st">"…/croissant/1.0"</span>,
 <span class="ky">"distribution"</span>: [{ <span class="ky">"@type"</span>: <span class="st">"cr:FileObject"</span>, <span class="ky">"sha256"</span>: <span class="st">"29506f94…"</span>,
-  <span class="ky">"cr:consentReceipt"</span>: {
-    <span class="ky">"atUri"</span>:        <span class="st">"at://…/org.consentvid.consent/3mkm6zmigrx2v"</span>,
+  <span class="ky">"cv:consentReceipt"</span>: {
+    <span class="ky">"atUri"</span>:        <span class="st">"at://…/org.consentvid.consent/3mqz72t5bhm2a"</span>,
     <span class="ky">"purposes"</span>:     [<span class="nm">"training"</span>, <span class="nm">"evaluation"</span>],
     <span class="ky">"modelClasses"</span>: [<span class="nm">"academic"</span>, <span class="nm">"openWeights"</span>],
     <span class="ky">"revocable"</span>:    true }}]</pre>
@@ -131,7 +131,7 @@
     <p class="eyebrow">Roadmap</p>
     <h2 class="h2">Shipped — <span class="grad">and what's next</span>.</h2>
     <div class="grid3">
-      <div class="rcard ship"><span class="rtag s">Shipped</span><h3>Consent, provenance, storage, revocation</h3><p>Signed records on the live network. R2 / IPFS / PeerTube storage. Revocation re-sync + feed. C2PA in-file provenance. Lexicons published, DNS-resolvable, client-side validated.</p></div>
+      <div class="rcard ship"><span class="rtag s">Shipped</span><h3>Consent, provenance, storage, revocation</h3><p>Signed records on the live network. R2 / IPFS / PeerTube storage. Signature-verified revocation re-sync + feed. Location/device metadata stripped by default. C2PA in-file provenance. Lexicons published, DNS-resolvable, client-side validated.</p></div>
       <div class="rcard"><span class="rtag">Next</span><h3>Web uploader. First contributor community</h3><p>A browser uploader for non-CLI contributors; hosted manifests; a hosted AppView. Onboarding one motivated community — egocentric, sign language, or oral history.</p></div>
       <div class="rcard"><span class="rtag">Later</span><h3>Loader. Compensation. Compliance</h3><p>A <span class="mono">consentvid-loader</span> that re-syncs revocations and verifies signatures in one call. Optional compensation. EU AI Act Art. 53 alignment.</p></div>
     </div>

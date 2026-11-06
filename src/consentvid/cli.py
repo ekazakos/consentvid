@@ -1,569 +1,931 @@
-"""ConsentVid CLI: register videos and attach consent receipts on ATproto."""
+"""ConsentVid command-line interface.
+
+Contributor commands write to your own ATproto repo and need `consentvid
+login`. Everything that only reads (verify, resync, export --repo, embed/read
+C2PA, appview) talks directly to the relevant PDS and needs no account.
+"""
+
+from __future__ import annotations
+
 import asyncio
-import hashlib
 import json
 import os
-import subprocess
-from datetime import datetime, timezone
+import re
+import sys
+import tempfile
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import click
 from atproto import Client
-from dotenv import load_dotenv
+from atproto_client.exceptions import AtProtocolError, NetworkError
+from dotenv import find_dotenv, load_dotenv
 
-from consentvid.croissant import build_manifest
-from consentvid.validate import validate_record
+from consentvid import __version__
+from consentvid.errors import ConfigError, ConsentVidError
+from consentvid.records import (
+    CONSENT_NSID,
+    VIDEO_NSID,
+    format_dt,
+    hash_file,
+    is_expired,
+    mime_for,
+    now_iso,
+    parse_at_uri,
+    parse_dt,
+    to_dict,
+)
+from consentvid.validate import validate_in_repo, write_policy_errors
+from consentvid.vocab import (
+    CAPTURE_PROVENANCE,
+    COMPENSATION,
+    MODALITIES,
+    MODEL_CLASSES,
+    PURPOSES,
+    RIGHTS_BASIS,
+    STORAGE_KINDS,
+)
+
+CONFIG_DIR = Path(os.environ.get("CONSENTVID_HOME", Path.home() / ".consentvid"))
+SESSION_PATH = CONFIG_DIR / "session.txt"
 
 
-VIDEO_NSID = "org.consentvid.video"
-CONSENT_NSID = "org.consentvid.consent"
-SESSION_PATH = Path.home() / ".consentvid" / "session.txt"
+# ------------------------------------------------------------ plumbing -------
 
 
-def now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+def _load_env() -> None:
+    """Settings precedence: real env > ./.env (or a parent) > ~/.consentvid/config.env
+    > the source checkout's .env (editable installs)."""
+    load_dotenv(find_dotenv(usecwd=True))
+    load_dotenv(CONFIG_DIR / "config.env")
+    load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 
-def get_client() -> Client:
-    service = os.environ.get("CONSENTVID_SERVICE", "https://bsky.social")
-    client = Client(service)
-    if SESSION_PATH.exists():
-        client.login(session_string=SESSION_PATH.read_text().strip())
-        return client
-    handle = os.environ.get("CONSENTVID_HANDLE")
-    pw = os.environ.get("CONSENTVID_APP_PASSWORD")
-    if not handle or not pw:
-        raise click.ClickException(
-            "No cached session and no credentials. Run `consentvid login` "
-            "or set CONSENTVID_HANDLE and CONSENTVID_APP_PASSWORD in .env."
-        )
-    client.login(handle, pw)
-    SESSION_PATH.parent.mkdir(parents=True, exist_ok=True)
-    SESSION_PATH.write_text(client.export_session_string())
+def _secure_config_dir() -> None:
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    CONFIG_DIR.chmod(0o700)
+
+
+def _xrpc_message(e: AtProtocolError) -> str:
+    content = getattr(getattr(e, "response", None), "content", None)
+    err, msg = getattr(content, "error", None), getattr(content, "message", None)
+    if err or msg:
+        return f"{err or 'Error'}: {msg or ''}".strip()
+    if isinstance(e, NetworkError):
+        return f"network error talking to the PDS: {e}"
+    return str(e) or type(e).__name__
+
+
+class _CLI(click.Group):
+    """Turn expected failures into one-line errors instead of tracebacks."""
+
+    def invoke(self, ctx):
+        try:
+            return super().invoke(ctx)
+        except ConsentVidError as e:
+            raise click.ClickException(str(e)) from e
+        except AtProtocolError as e:
+            raise click.ClickException(_xrpc_message(e)) from e
+
+
+def _warn(msg: str) -> None:
+    click.secho(f"warning: {msg}", fg="yellow", err=True)
+
+
+def _new_client() -> Client:
+    client = Client(os.environ.get("CONSENTVID_SERVICE", "https://bsky.social"))
+
+    # Persist every new or refreshed session; otherwise the cached refresh
+    # token eventually expires and every command fails with ExpiredToken.
+    def _save(_event, _session):
+        _secure_config_dir()
+        SESSION_PATH.write_text(client.export_session_string())
+        SESSION_PATH.chmod(0o600)
+
+    client.on_session_change(_save)
     return client
 
 
-def _validate_records(override: bool | None = None) -> bool:
-    """Whether to ask the PDS to validate records against published lexicons.
+def get_client() -> Client:
+    """An authenticated client: cached session, else credentials from env."""
+    if SESSION_PATH.exists():
+        client = _new_client()
+        try:
+            client.login(session_string=SESSION_PATH.read_text().strip())
+            return client
+        except Exception:  # noqa: BLE001 — expired/invalid: fall back to credentials
+            pass
+    handle = os.environ.get("CONSENTVID_HANDLE")
+    pw = os.environ.get("CONSENTVID_APP_PASSWORD")
+    if not handle or not pw:
+        raise ConfigError(
+            "not logged in. Run `consentvid login` (use an app password from "
+            "https://bsky.app/settings/app-passwords, never your main password)."
+        )
+    client = _new_client()
+    client.login(handle, pw)
+    return client
 
-    Defaults to CONSENTVID_VALIDATE (off until lexicons are resolvable); an
-    explicit --validate/--no-validate flag overrides.
-    """
+
+def _list_all(client: Client, did: str, collection: str) -> list:
+    out, cursor = [], None
+    while True:
+        params = {"repo": did, "collection": collection, "limit": 100}
+        if cursor:
+            params["cursor"] = cursor
+        resp = client.com.atproto.repo.list_records(params)
+        out.extend(resp.records)
+        cursor = resp.cursor
+        if not cursor or not resp.records:
+            return out
+
+
+def _validate_flag(override: bool | None) -> bool | None:
+    """Value for createRecord's `validate`. None = the PDS's default
+    ("optimistic": validate lexicons it knows, accept others), which is the
+    right setting for third-party lexicons; True forces strict validation and
+    fails on PDSes that don't resolve them (bsky.social doesn't)."""
     if override is not None:
         return override
-    return os.environ.get("CONSENTVID_VALIDATE", "0").lower() in ("1", "true", "yes")
+    env = os.environ.get("CONSENTVID_VALIDATE", "").lower()
+    return True if env in ("1", "true", "yes") else None
 
 
-def _check_local(nsid: str, record: dict) -> None:
-    """Validate a record against its lexicon locally before writing. Since
-    bsky.social won't validate custom lexicons on write, this is where we catch
-    malformed records — before they hit the network."""
-    errors = validate_record(nsid, record)
+def _check_before_write(nsid: str, record: dict, did: str) -> None:
+    errors = validate_in_repo(nsid, record, did) + write_policy_errors(nsid, record)
     if errors:
-        raise click.ClickException(
-            "Record failed local lexicon validation:\n  - " + "\n  - ".join(errors)
+        raise ConsentVidError("record failed validation:\n  - " + "\n  - ".join(errors))
+
+
+def _write_params(did, collection, record, validate, rkey=None) -> dict:
+    params = {"repo": did, "collection": collection, "record": record}
+    if rkey:
+        params["rkey"] = rkey
+    v = _validate_flag(validate)
+    if v is not None:
+        params["validate"] = v
+    return params
+
+
+def _parse_expiry(value: str | None) -> str | None:
+    """Accept an atproto datetime, a date (midnight UTC) or a duration like
+    30d / 12w / 2y. Must be in the future."""
+    if not value:
+        return None
+    now = datetime.now(UTC)
+    m = re.fullmatch(r"(\d+)([dwy])", value.strip())
+    if m:
+        n, unit = int(m.group(1)), m.group(2)
+        dt = now + timedelta(days=n * {"d": 1, "w": 7, "y": 365}[unit])
+    else:
+        dt = parse_dt(value)
+        if dt is None:
+            try:
+                dt = datetime.combine(date.fromisoformat(value), datetime.min.time(), UTC)
+            except ValueError:
+                raise click.BadParameter(
+                    "use an ISO datetime with timezone (2027-01-01T00:00:00Z), a date "
+                    "(2027-01-01) or a duration (90d, 12w, 2y)",
+                    param_hint="--expires-at",
+                ) from None
+    if dt <= now:
+        raise click.BadParameter("expiry must be in the future", param_hint="--expires-at")
+    return format_dt(dt)
+
+
+def _require_attestation(attest: bool) -> None:
+    if not attest:
+        raise click.UsageError(
+            "consent requires --attest-authorship: you affirm (signed by your key) that "
+            "you recorded this video yourself or otherwise hold the right to consent. "
+            "Consenting on behalf of someone else's video (e.g. a YouTube re-upload) is "
+            "unlawful. If you hold a licence rather than having filmed it, also pass "
+            "--rights-basis licensed."
         )
 
 
-def hash_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return f"sha256-{h.hexdigest()}"
+def _default_storage() -> str:
+    from consentvid import storage
+
+    env = os.environ.get("CONSENTVID_STORAGE")
+    if env:
+        return env
+    return "r2" if storage.configured("r2") else "local"
 
 
-def _record_value_to_dict(value):
-    """Recursively coerce an atproto record value to JSON-friendly types.
-
-    The SDK may return a Pydantic model (for known lexicons) or a DotDict-like
-    wrapper (for unknown lexicons). DotDict's __getattr__ returns None for
-    missing keys, so a hasattr check on 'model_dump' lies — we check callable.
-    """
-    mdump = getattr(value, "model_dump", None)
-    if callable(mdump):
-        return mdump(by_alias=True)
-    if isinstance(value, dict):
-        return {k: _record_value_to_dict(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_record_value_to_dict(v) for v in value]
-    if isinstance(value, (str, int, float, bool)) or value is None:
-        return value
-    try:
-        return {k: _record_value_to_dict(v) for k, v in dict(value).items()}
-    except Exception:
-        return repr(value)
+# ------------------------------------------------------------- options -------
 
 
-def probe_video(path: Path) -> dict:
-    try:
-        out = subprocess.check_output(
-            [
-                "ffprobe", "-v", "error",
-                "-select_streams", "v:0",
-                "-show_entries", "stream=width,height,duration",
-                "-of", "json", str(path),
-            ],
-            stderr=subprocess.DEVNULL,
+def _video_options(f):
+    for opt in reversed(
+        [
+            click.option("--title", required=True, help="Short title (max 300 bytes)."),
+            click.option("--description", default="", help="Optional longer description."),
+            click.option("--language", default="", help="BCP-47 tag of spoken language, e.g. en, cs."),
+            click.option("--tag", "tags", multiple=True, help="Topic tag. Repeatable."),
+            click.option(
+                "--storage-kind",
+                type=click.Choice(STORAGE_KINDS),
+                default=None,
+                help="Where the bytes live. Default: $CONSENTVID_STORAGE, else r2 if "
+                "configured, else local (not usable in shared datasets).",
+            ),
+            click.option(
+                "--storage-value",
+                default=None,
+                help="Existing pointer (URL or CID). Omit for r2/ipfs/peertube to upload.",
+            ),
+            click.option(
+                "--keep-metadata",
+                is_flag=True,
+                help="Do NOT strip location/device metadata from the file (not recommended).",
+            ),
+            click.option(
+                "--allow-duplicate",
+                is_flag=True,
+                help="Register even if you already registered identical bytes.",
+            ),
+        ]
+    ):
+        f = opt(f)
+    return f
+
+
+def _consent_options(f):
+    for opt in reversed(
+        [
+            click.option(
+                "--attest-authorship",
+                "attest",
+                is_flag=True,
+                help="REQUIRED. You affirm, signed by your key, that you recorded this "
+                "video (or otherwise hold the rights) and may grant consent.",
+            ),
+            click.option(
+                "--modality",
+                "modalities",
+                multiple=True,
+                type=click.Choice(MODALITIES),
+                help="What may be used. Repeatable. Default: video, audio.",
+            ),
+            click.option(
+                "--purpose",
+                "purposes",
+                multiple=True,
+                type=click.Choice(PURPOSES),
+                help="Permitted purpose. Repeatable. Default: training.",
+            ),
+            click.option(
+                "--model-class",
+                "model_classes",
+                multiple=True,
+                type=click.Choice(MODEL_CLASSES),
+                help="Who may use it. Repeatable. Default: academic.",
+            ),
+            click.option(
+                "--expires-at",
+                default=None,
+                help="Optional expiry: ISO datetime, date, or duration (90d, 12w, 2y).",
+            ),
+            click.option(
+                "--compensation", type=click.Choice(COMPENSATION), default="none", show_default=True
+            ),
+            click.option(
+                "--rights-basis",
+                type=click.Choice(RIGHTS_BASIS),
+                default="ownRecording",
+                show_default=True,
+                help="Why you may grant consent.",
+            ),
+            click.option(
+                "--capture-provenance",
+                type=click.Choice(CAPTURE_PROVENANCE),
+                default="selfAttested",
+                show_default=True,
+                help="'attested' is reserved for capture-time cryptographic provenance.",
+            ),
+        ]
+    ):
+        f = opt(f)
+    return f
+
+
+def _validate_option(f):
+    return click.option(
+        "--validate/--no-validate",
+        "validate",
+        default=None,
+        help="Force (or disable) PDS-side lexicon validation. Default: the PDS's own "
+        "policy. Records are always validated locally first.",
+    )(f)
+
+
+# ---------------------------------------------------- register / attach ------
+
+
+def _prepare_bytes(path: Path, kind: str, keep_metadata: bool, workdir: Path, pointer_given: bool):
+    """Inspect the file and strip identifying metadata unless told not to.
+    Returns (path_to_publish, probe_or_None). The record's contentHash is the
+    hash of the returned path, so those must be the bytes the pointer serves."""
+    from consentvid import media
+
+    probe = media.probe(path)
+    if probe is None:
+        _warn(
+            "ffprobe not found: can't read duration/size or check for location metadata (brew install ffmpeg)"
         )
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        return {}
-    streams = json.loads(out).get("streams", [])
-    if not streams:
-        return {}
-    s = streams[0]
-    result = {}
-    if "width" in s:
-        result["width"] = int(s["width"])
-    if "height" in s:
-        result["height"] = int(s["height"])
-    if "duration" in s:
-        result["durationMs"] = int(round(float(s["duration"]) * 1000))
-    return result
+        return path, None
+    if not probe.needs_sanitising:
+        return path, probe
+    found = list(probe.sensitive_tags.items())[:6]
+    if keep_metadata:
+        _warn("publishing WITH identifying metadata: " + ", ".join(f"{k}={v}" for k, v in found))
+        return path, probe
+    click.echo("Stripping identifying metadata (lossless, no re-encode):")
+    for k, v in found:
+        click.echo(f"  - {k} = {v}")
+    for s in probe.extra_streams:
+        click.echo(f"  - extra stream {s}")
+    if pointer_given:
+        # The bytes behind an existing pointer still carry the metadata, and
+        # the record would commit to bytes nobody serves. Hand over a clean copy.
+        out = path.with_name(f"{path.stem}.clean{path.suffix}")
+        media.sanitise(path, out)
+        raise ConsentVidError(
+            f"{path.name} contains identifying metadata, so the bytes at --storage-value "
+            f"would too. A clean copy was written to {out}: host that file instead and "
+            "pass its pointer, drop --storage-value to let consentvid upload it, or use "
+            "--keep-metadata."
+        )
+    if kind == "local":
+        # Kept by the contributor: leave the clean copy next to the original.
+        out = path.with_name(f"{path.stem}.clean{path.suffix}")
+        click.echo(f"  -> clean copy: {out}  (the record commits to this file's hash)")
+    else:
+        out = workdir / f"clean{path.suffix.lower()}"
+    return out, media.sanitise(path, out)
 
 
-@click.group()
-def main():
-    """consentvid: register videos and consent receipts on ATproto."""
-    load_dotenv()
+def _bytes_shared(client: Client, did: str, ref: dict, exclude_uri: str | None = None) -> str | None:
+    """URI of another of your video records using the same stored bytes, if any
+    (R2/IPFS storage is content-addressed, so duplicates share one object)."""
+    for r in _list_all(client, did, VIDEO_NSID):
+        if r.uri != exclude_uri and (to_dict(r.value).get("storageRef") or {}) == ref:
+            return r.uri
+    return None
 
 
-@main.command()
-def login():
-    """Authenticate and cache a session locally."""
-    handle = os.environ.get("CONSENTVID_HANDLE") or click.prompt("Handle")
-    pw = os.environ.get("CONSENTVID_APP_PASSWORD") or click.prompt(
-        "App password", hide_input=True
-    )
-    service = os.environ.get("CONSENTVID_SERVICE", "https://bsky.social")
-    client = Client(service)
-    client.login(handle, pw)
-    SESSION_PATH.parent.mkdir(parents=True, exist_ok=True)
-    SESSION_PATH.write_text(client.export_session_string())
-    click.echo(f"Logged in as {client.me.handle} ({client.me.did})")
-    click.echo(f"Session cached at {SESSION_PATH}")
-
-
-@main.command()
-def whoami():
-    """Show the cached session's identity."""
-    client = get_client()
-    click.echo(f"{client.me.handle} ({client.me.did})")
-
-
-@main.command("register-video")
-@click.argument("video_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
-@click.option("--title", required=True)
-@click.option("--description", default="")
-@click.option("--language", default="")
-@click.option("--tag", "tags", multiple=True, help="Repeatable.")
-@click.option(
-    "--storage-kind",
-    default="local",
-    type=click.Choice(["local", "url", "ipfs", "r2", "peertube"]),
-)
-@click.option(
-    "--storage-value",
-    default=None,
-    help="Pointer to where the bytes live; defaults to the local path. For r2/ipfs/"
-    "peertube, omit to upload and let the backend fill it in.",
-)
-@click.option("--validate/--no-validate", "validate", default=None,
-              help="Validate against the published lexicon (default: CONSENTVID_VALIDATE).")
-def register_video(
-    video_path, title, description, language, tags, storage_kind, storage_value, validate
+def _register(
+    client: Client,
+    video_path: Path,
+    *,
+    title,
+    description,
+    language,
+    tags,
+    storage_kind,
+    storage_value,
+    keep_metadata,
+    allow_duplicate,
+    validate,
 ):
-    """Compute hash + metadata and create a video record on the user's PDS."""
-    client = get_client()
-    content_hash = hash_file(video_path)
+    from consentvid import storage
 
-    if storage_kind == "r2" and not storage_value:
-        from consentvid.storage import upload_to_r2
-        try:
-            storage_value = upload_to_r2(video_path, content_hash)
-        except RuntimeError as e:
-            raise click.ClickException(str(e))
-        click.echo(f"Uploaded to R2: {storage_value}")
-    elif storage_kind == "ipfs" and not storage_value:
-        from consentvid.storage import add_to_ipfs
-        try:
-            storage_value = add_to_ipfs(video_path)
-        except RuntimeError as e:
-            raise click.ClickException(str(e))
-        click.echo(f"Added to IPFS: {storage_value}")
-    elif storage_kind == "peertube" and not storage_value:
-        from consentvid.storage import upload_to_peertube
-        try:
-            storage_value = upload_to_peertube(video_path, title)
-        except RuntimeError as e:
-            raise click.ClickException(str(e))
-        click.echo(f"Uploaded to PeerTube: {storage_value}")
-    elif storage_kind == "url" and not storage_value:
-        raise click.ClickException("--storage-kind url requires --storage-value <https://...>")
-    elif storage_kind == "local":
-        storage_value = storage_value or str(video_path.resolve())
+    did = client.me.did
+    kind = storage_kind or _default_storage()
+    if kind == "local":
+        _warn(
+            "storage kind 'local': nobody else can fetch these bytes, so this clip "
+            "can't appear in shared datasets. Use --storage-kind r2/ipfs/peertube/url."
+        )
+    if kind == "url" and not storage_value:
+        raise click.UsageError("--storage-kind url requires --storage-value https://...")
+    if kind == "url" and not storage_value.startswith("https://"):
+        raise click.UsageError("--storage-value for url must be an https:// URL")
 
-    record = {
-        "$type": VIDEO_NSID,
-        "title": title,
-        "contentHash": content_hash,
-        "createdAt": now_iso(),
-        "storageRef": {
-            "kind": storage_kind,
-            "value": storage_value,
-        },
-    }
-    if description:
-        record["description"] = description
-    if language:
-        record["language"] = language
-    if tags:
-        record["tags"] = list(tags)
-    record.update(probe_video(video_path))
-    _check_local(VIDEO_NSID, record)
-    resp = client.com.atproto.repo.create_record(
-        {
-            "repo": client.me.did,
-            "collection": VIDEO_NSID,
-            "validate": _validate_records(validate),
-            "record": record,
+    _secure_config_dir()
+    with tempfile.TemporaryDirectory(dir=CONFIG_DIR) as tmp:
+        path, probe = _prepare_bytes(video_path, kind, keep_metadata, Path(tmp), bool(storage_value))
+        content_hash = hash_file(path)
+
+        if not allow_duplicate:
+            for r in _list_all(client, did, VIDEO_NSID):
+                if to_dict(r.value).get("contentHash") == content_hash:
+                    raise ConsentVidError(
+                        f"these bytes are already registered as {r.uri} "
+                        "(pass --allow-duplicate to register again)"
+                    )
+
+        record = {
+            "$type": VIDEO_NSID,
+            "title": title,
+            "contentHash": content_hash,
+            "storageRef": {"kind": kind, "value": storage_value or ""},
+            "createdAt": now_iso(),
         }
-    )
-    click.echo("Created video record:")
-    click.echo(f"  uri:  {resp.uri}")
-    click.echo(f"  cid:  {resp.cid}")
-    click.echo(f"  hash: {content_hash}")
+        if mime := mime_for(path):
+            record["mimeType"] = mime
+        if description:
+            record["description"] = description
+        if language:
+            record["language"] = language
+        if tags:
+            record["tags"] = list(dict.fromkeys(tags))
+        if probe:
+            record.update(probe.record_fields())
+        if kind == "local" and not storage_value:
+            record["storageRef"]["value"] = path.name  # the file actually hashed
+        uploading = kind in storage.UPLOAD_KINDS and not storage_value
+        if uploading:
+            record["storageRef"]["value"] = "pending-upload"
+        # Validate BEFORE uploading so a bad record never leaves orphaned bytes.
+        _check_before_write(VIDEO_NSID, record, did)
+
+        uploaded = False
+        try:
+            if uploading:
+                click.echo(f"Uploading to {kind} ...")
+                record["storageRef"]["value"] = storage.upload(
+                    kind, path, content_hash=content_hash, title=title
+                )
+                uploaded = True
+                click.echo(f"  -> {record['storageRef']['value']}")
+                _check_before_write(VIDEO_NSID, record, did)
+            resp = client.com.atproto.repo.create_record(_write_params(did, VIDEO_NSID, record, validate))
+        except Exception:
+            if uploaded:
+                try:
+                    other = _bytes_shared(client, did, record["storageRef"])
+                except Exception:  # noqa: BLE001 — can't tell: keep the bytes
+                    other = "an unknown record (could not check)"
+                if other:
+                    _warn(f"record creation failed; keeping the stored bytes (also used by {other})")
+                else:
+                    _warn("record creation failed; removing the uploaded bytes")
+                    try:
+                        storage.delete_bytes(record["storageRef"])
+                    except Exception as cleanup:  # noqa: BLE001
+                        _warn(f"cleanup failed, remove manually: {cleanup}")
+            raise
+    return resp.uri, resp.cid, record
 
 
-@main.command("attach-consent")
-@click.argument("video_uri")
-@click.option(
-    "--modality",
-    "modalities",
-    multiple=True,
-    default=("video", "audio"),
-    type=click.Choice(["video", "audio", "transcript", "face", "voice"]),
-)
-@click.option(
-    "--purpose",
-    "purposes",
-    multiple=True,
-    default=("training",),
-    type=click.Choice(["training", "evaluation", "benchmarking", "researchOnly"]),
-)
-@click.option(
-    "--model-class",
-    "model_classes",
-    multiple=True,
-    default=("academic",),
-    type=click.Choice(["academic", "openWeights", "commercial", "foundationModel"]),
-)
-@click.option("--expires-at", default=None, help="ISO-8601 datetime. Optional.")
-@click.option(
-    "--compensation",
-    default="none",
-    type=click.Choice(["none", "creditOnly", "monetary"]),
-)
-@click.option(
-    "--non-revocable",
-    is_flag=True,
-    default=False,
-    help="Mark consent as non-revocable (default: revocable).",
-)
-@click.option(
-    "--attest-authorship",
-    "attest",
-    is_flag=True,
-    default=False,
-    help="REQUIRED. Affirm you recorded this video yourself (or are its rightful "
-    "author) and are authorized to grant consent. Signed by your repo key.",
-)
-@click.option(
-    "--rights-basis",
-    default="ownRecording",
-    type=click.Choice(["ownRecording", "licensed", "otherRightsHolder"]),
-    help="Basis for your right to grant consent (default: ownRecording).",
-)
-@click.option(
-    "--capture-provenance",
-    default="selfAttested",
-    type=click.Choice(["attested", "selfAttested", "unverified"]),
-    help="Capture-provenance tier (default: selfAttested; 'attested' is reserved "
-    "for capture-time cryptographic provenance such as C2PA/CAWG).",
-)
-@click.option("--validate/--no-validate", "validate", default=None,
-              help="Validate against the published lexicon (default: CONSENTVID_VALIDATE).")
-def attach_consent(
-    video_uri,
+def _attach(
+    client: Client,
+    video_uri: str,
+    *,
     modalities,
     purposes,
     model_classes,
     expires_at,
     compensation,
-    non_revocable,
     attest,
     rights_basis,
     capture_provenance,
+    replace,
     validate,
 ):
-    """Create a consent receipt referencing a video record by AT-URI."""
-    if not attest:
-        raise click.ClickException(
-            "Consent requires an explicit authorship attestation. Re-run with "
-            "--attest-authorship to affirm you recorded this video yourself (or "
-            "are its rightful author) and are authorized to grant this consent.\n"
-            "Uploading someone else's video (e.g. a YouTube clip) and consenting "
-            "to its use would be unlawful. If your right comes from a licence "
-            "rather than having filmed it, also pass --rights-basis licensed."
+    _require_attestation(attest)
+    did = client.me.did
+    try:
+        vat = parse_at_uri(video_uri, VIDEO_NSID)
+    except ValueError as e:
+        raise click.BadParameter(str(e), param_hint="VIDEO_URI") from None
+    if vat.did != did:
+        raise ConsentVidError(
+            f"{video_uri} is not in your repo ({did}): you can only consent for videos you registered"
         )
-    client = get_client()
+    video = client.com.atproto.repo.get_record({"repo": did, "collection": VIDEO_NSID, "rkey": vat.rkey})
+
+    existing = sorted(
+        (
+            (r.uri, to_dict(r.value))
+            for r in _list_all(client, did, CONSENT_NSID)
+            if to_dict(r.value).get("videoUri") == str(vat)
+        ),
+        key=lambda x: x[1].get("createdAt", ""),
+    )
+    if existing and not replace:
+        raise ConsentVidError(
+            f"this video already has consent {existing[-1][0]}.\n"
+            "Pass --replace to change its terms (downstream datasets will see it as "
+            "modified), or `consentvid revoke` it first."
+        )
+
     record = {
         "$type": CONSENT_NSID,
-        "videoUri": video_uri,
-        "modalities": list(modalities),
-        "purposes": list(purposes),
-        "modelClasses": list(model_classes),
+        "videoUri": str(vat),
+        "videoCid": str(video.cid),
+        "modalities": list(dict.fromkeys(modalities or ("video", "audio"))),
+        "purposes": list(dict.fromkeys(purposes or ("training",))),
+        "modelClasses": list(dict.fromkeys(model_classes or ("academic",))),
         "compensation": compensation,
-        "revocable": not non_revocable,
+        "revocable": True,
         "authorshipAttested": True,
         "rightsBasis": rights_basis,
         "captureProvenance": capture_provenance,
         "createdAt": now_iso(),
     }
     if expires_at:
-        record["expiresAt"] = expires_at
-    _check_local(CONSENT_NSID, record)
-    resp = client.com.atproto.repo.create_record(
-        {
-            "repo": client.me.did,
-            "collection": CONSENT_NSID,
-            "validate": _validate_records(validate),
-            "record": record,
-        }
+        record["expiresAt"] = _parse_expiry(expires_at)
+    _check_before_write(CONSENT_NSID, record, did)
+
+    if existing:
+        keep_uri = existing[-1][0]
+        resp = client.com.atproto.repo.put_record(
+            _write_params(did, CONSENT_NSID, record, validate, rkey=parse_at_uri(keep_uri).rkey)
+        )
+        for old_uri, _ in existing[:-1]:  # legacy duplicates: superseded
+            client.com.atproto.repo.delete_record(
+                {"repo": did, "collection": CONSENT_NSID, "rkey": parse_at_uri(old_uri).rkey}
+            )
+            click.echo(f"Deleted superseded consent {old_uri}")
+        return resp.uri, resp.cid, record, True
+    resp = client.com.atproto.repo.create_record(_write_params(did, CONSENT_NSID, record, validate))
+    return resp.uri, resp.cid, record, False
+
+
+def _print_consent(uri, cid, record, replaced=False):
+    from consentvid.policy import describe_terms
+
+    click.secho(("Replaced" if replaced else "Created") + " consent receipt:", fg="green")
+    click.echo(f"  uri:   {uri}")
+    click.echo(f"  cid:   {cid}")
+    click.echo(f"  terms: {describe_terms(record)}")
+    click.echo("  Withdraw any time with: consentvid revoke " + uri)
+
+
+# ---------------------------------------------------------------- CLI --------
+
+
+@click.group(cls=_CLI, context_settings={"help_option_names": ["-h", "--help"]})
+@click.version_option(__version__, prog_name="consentvid")
+def main():
+    """ConsentVid: register videos and signed consent receipts on ATproto, and
+    build datasets that honour them."""
+    _load_env()
+
+
+@main.command()
+def login():
+    """Log in with an app password and cache the session (~/.consentvid)."""
+    handle = os.environ.get("CONSENTVID_HANDLE") or click.prompt("Handle (e.g. you.bsky.social)")
+    pw = os.environ.get("CONSENTVID_APP_PASSWORD") or click.prompt(
+        "App password (bsky.app/settings/app-passwords)", hide_input=True
     )
-    click.echo("Created consent receipt:")
-    click.echo(f"  uri: {resp.uri}")
-    click.echo(f"  cid: {resp.cid}")
+    client = _new_client()
+    client.login(handle.removeprefix("@"), pw)
+    click.echo(f"Logged in as {client.me.handle} ({client.me.did})")
+
+
+@main.command()
+def logout():
+    """Delete the cached session."""
+    if SESSION_PATH.exists():
+        SESSION_PATH.unlink()
+        click.echo("Logged out.")
+    else:
+        click.echo("No cached session.")
+
+
+@main.command()
+def whoami():
+    """Show the logged-in identity."""
+    client = get_client()
+    click.echo(f"{client.me.handle} ({client.me.did})")
+
+
+@main.command("register-video")
+@click.argument("video_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@_video_options
+@_validate_option
+def register_video(video_path, validate, **video_opts):
+    """Register a video: strip identifying metadata, hash, upload, and write a
+    signed org.consentvid.video record. Then use attach-consent (or use
+    `contribute` to do both in one step)."""
+    client = get_client()
+    uri, cid, record = _register(client, video_path, validate=validate, **video_opts)
+    click.secho("Created video record:", fg="green")
+    click.echo(f"  uri:  {uri}\n  cid:  {cid}\n  hash: {record['contentHash']}")
+    click.echo(f"Next: consentvid attach-consent {uri} --attest-authorship ...")
+
+
+@main.command("attach-consent")
+@click.argument("video_uri")
+@_consent_options
+@click.option("--replace", is_flag=True, help="Replace this video's existing consent terms.")
+@_validate_option
+def attach_consent(video_uri, replace, validate, **terms):
+    """Attach a signed consent receipt to one of your videos (one per video)."""
+    _require_attestation(terms["attest"])
+    client = get_client()
+    uri, cid, record, replaced = _attach(client, video_uri, replace=replace, validate=validate, **terms)
+    _print_consent(uri, cid, record, replaced)
+
+
+@main.command()
+@click.argument("video_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@_video_options
+@_consent_options
+@_validate_option
+def contribute(video_path, validate, **opts):
+    """Register a video AND attach consent in one step (the usual workflow).
+
+    \b
+    Example:
+      consentvid contribute clip.mp4 --title "Making pasta" --tag cooking \\
+          --attest-authorship --purpose training --model-class academic
+    """
+    consent_keys = (
+        "attest",
+        "modalities",
+        "purposes",
+        "model_classes",
+        "expires_at",
+        "compensation",
+        "rights_basis",
+        "capture_provenance",
+    )
+    terms = {k: opts.pop(k) for k in consent_keys}
+    _require_attestation(terms["attest"])  # fail before uploading anything
+    _parse_expiry(terms["expires_at"])
+    client = get_client()
+    uri, cid, record = _register(client, video_path, validate=validate, **opts)
+    click.secho("Created video record:", fg="green")
+    click.echo(f"  uri:  {uri}\n  hash: {record['contentHash']}")
+    try:
+        c_uri, c_cid, c_record, _ = _attach(client, uri, replace=False, validate=validate, **terms)
+    except Exception:
+        _warn(f"video registered but consent failed; retry with: consentvid attach-consent {uri}")
+        raise
+    _print_consent(c_uri, c_cid, c_record)
 
 
 @main.command("list")
-@click.option(
-    "--collection",
-    default=CONSENT_NSID,
-    type=click.Choice([VIDEO_NSID, CONSENT_NSID]),
-)
-@click.option("--limit", default=50, type=int)
-def list_records(collection, limit):
-    """List the user's video or consent records."""
+@click.option("--videos", "what", flag_value="videos", help="Only videos.")
+@click.option("--consents", "what", flag_value="consents", help="Only consents.")
+@click.option("--json", "as_json", is_flag=True, help="Full records as JSON.")
+def list_records(what, as_json):
+    """List your videos and consent receipts."""
+    from consentvid.policy import describe_terms
+
     client = get_client()
-    resp = client.com.atproto.repo.list_records(
-        {"repo": client.me.did, "collection": collection, "limit": limit}
-    )
-    if not resp.records:
-        click.echo(f"No records in {collection}.")
+    did = client.me.did
+    videos = [] if what == "consents" else _list_all(client, did, VIDEO_NSID)
+    consents = [] if what == "videos" else _list_all(client, did, CONSENT_NSID)
+    if as_json:
+        dump = lambda rs: [{"uri": r.uri, "cid": str(r.cid), "value": to_dict(r.value)} for r in rs]  # noqa: E731
+        click.echo(json.dumps({"videos": dump(videos), "consents": dump(consents)}, indent=2))
         return
-    for r in resp.records:
-        click.echo(r.uri)
-        click.echo(json.dumps(_record_value_to_dict(r.value), default=str, indent=2))
-        click.echo()
+    by_video: dict[str, list] = {}
+    for r in consents:
+        by_video.setdefault(to_dict(r.value).get("videoUri"), []).append(r)
+    for r in videos:
+        v = to_dict(r.value)
+        ref = v.get("storageRef", {})
+        click.secho(f"{v.get('title')!r}", bold=True)
+        click.echo(f"  video:   {r.uri}\n  storage: {ref.get('kind')}  {ref.get('value')}")
+        linked = by_video.pop(r.uri, [])
+        if not linked:
+            click.secho("  consent: none", fg="yellow")
+        for c in linked:
+            cv = to_dict(c.value)
+            state = " (EXPIRED)" if is_expired(cv) else ""
+            click.echo(f"  consent: {c.uri}{state}\n           {describe_terms(cv)}")
+    for vuri, cs in by_video.items():
+        for c in cs:
+            click.secho(f"consent {c.uri} -> missing video {vuri}", fg="yellow")
+    if not videos and not consents:
+        click.echo("Nothing registered yet. Try: consentvid contribute --help")
 
 
 @main.command()
 @click.argument("uri")
-def revoke(uri):
-    """Delete a record by AT-URI from your repo.
+@click.option(
+    "--delete-bytes", is_flag=True, help="Also delete the video bytes from R2/PeerTube or unpin from IPFS."
+)
+@click.option("-y", "--yes", is_flag=True, help="Don't ask for confirmation.")
+def revoke(uri, delete_bytes, yes):
+    """Withdraw consent: delete a consent receipt, or a video together with all
+    its consents.
 
-    Deleting from your repo does not remove copies already collected into
-    datasets. To propagate a revocation, consumers re-sync: `consentvid resync`
-    (against a manifest) or `consentvid appview revocations` (against the index).
+    Datasets learn about it when they run `consentvid resync`, and the AppView
+    sees the deletion on the firehose immediately.
     """
+    from consentvid import storage
+
+    try:
+        at = parse_at_uri(uri)
+    except ValueError as e:
+        raise click.BadParameter(str(e), param_hint="URI") from None
+    if at.collection not in (VIDEO_NSID, CONSENT_NSID):
+        raise ConsentVidError(f"not a ConsentVid record: {at.collection}")
+    if at.collection == CONSENT_NSID and delete_bytes:
+        raise click.UsageError("--delete-bytes applies when revoking a video URI")
     client = get_client()
-    parts = uri.removeprefix("at://").split("/")
-    if len(parts) != 3:
-        raise click.ClickException(f"Bad AT-URI: {uri}")
-    repo, collection, rkey = parts
-    if repo != client.me.did:
-        raise click.ClickException(f"Not your record (repo={repo}).")
-    client.com.atproto.repo.delete_record(
-        {"repo": repo, "collection": collection, "rkey": rkey}
+    did = client.me.did
+    if at.did != did:
+        raise ConsentVidError(f"not your record (it belongs to {at.did})")
+
+    if at.collection == CONSENT_NSID:
+        if not yes:
+            click.confirm(f"Withdraw consent {uri}?", abort=True)
+        client.com.atproto.repo.delete_record({"repo": did, "collection": CONSENT_NSID, "rkey": at.rkey})
+        click.secho(f"Withdrawn: {uri}", fg="green")
+        return
+
+    video = to_dict(
+        client.com.atproto.repo.get_record({"repo": did, "collection": VIDEO_NSID, "rkey": at.rkey}).value
     )
-    click.echo(f"Deleted {uri}")
+    linked = [r for r in _list_all(client, did, CONSENT_NSID) if to_dict(r.value).get("videoUri") == uri]
+    ref = video.get("storageRef", {})
+    click.echo(f"Video {video.get('title')!r} ({ref.get('kind')}: {ref.get('value')})")
+    click.echo(f"  {len(linked)} consent receipt(s) will be deleted with it.")
+    if delete_bytes:
+        click.echo("  The stored bytes will be deleted too.")
+    if not yes:
+        click.confirm("Proceed?", abort=True)
+    for r in linked:
+        client.com.atproto.repo.delete_record(
+            {"repo": did, "collection": CONSENT_NSID, "rkey": parse_at_uri(r.uri).rkey}
+        )
+        click.echo(f"Withdrawn: {r.uri}")
+    client.com.atproto.repo.delete_record({"repo": did, "collection": VIDEO_NSID, "rkey": at.rkey})
+    click.echo(f"Deleted video record: {uri}")
+    if delete_bytes:
+        other = _bytes_shared(client, did, ref, exclude_uri=uri)
+        if other:
+            _warn(f"not deleting the bytes: another of your videos uses them ({other})")
+        else:
+            click.echo(storage.delete_bytes(ref))
+    elif storage.public_url(ref):
+        _warn(
+            f"the bytes are still publicly reachable at {storage.public_url(ref)}; "
+            "pass --delete-bytes to remove them"
+        )
+
+
+# ------------------------------------------------------------- datasets ------
+
+
+def _own_did() -> str:
+    handle = os.environ.get("CONSENTVID_HANDLE")
+    if handle:
+        from consentvid.identity import resolve_did
+
+        return resolve_did(handle)
+    return get_client().me.did
+
+
+def _filter_options(f):
+    for opt in reversed(
+        [
+            click.option(
+                "--purpose",
+                "purposes",
+                multiple=True,
+                type=click.Choice(PURPOSES),
+                help="Require this purpose. Repeatable (all required).",
+            ),
+            click.option(
+                "--model-class",
+                "model_classes",
+                multiple=True,
+                type=click.Choice(MODEL_CLASSES),
+                help="Require this model class. Repeatable (all required).",
+            ),
+            click.option(
+                "--modality",
+                "modalities",
+                multiple=True,
+                type=click.Choice(MODALITIES),
+                help="Require this modality. Repeatable (all required).",
+            ),
+        ]
+    ):
+        f = opt(f)
+    return f
 
 
 @main.command()
 @click.argument("output_path", type=click.Path(dir_okay=False, path_type=Path))
-@click.option("--name", default=None, help="Dataset name. Defaults to consentvid-<handle>-<date>.")
+@click.option(
+    "--repo", default=None, help="Contributor handle or DID (default: you). No login needed for others."
+)
+@_filter_options
+@click.option("--tag", "tags", multiple=True, help="Only videos with any of these tags.")
+@click.option("--name", default=None, help="Dataset name.")
 @click.option("--description", default=None)
-@click.option(
-    "--purpose",
-    "purposes",
-    multiple=True,
-    help="Filter consents to those covering this purpose. Repeatable.",
-)
-@click.option(
-    "--tag",
-    "tags",
-    multiple=True,
-    help="Filter videos by tag. Repeatable.",
-)
-def export(output_path, name, description, purposes, tags):
-    """Emit a Croissant-RAI dataset manifest from this user's consents."""
-    client = get_client()
-    consent_resp = client.com.atproto.repo.list_records(
-        {"repo": client.me.did, "collection": CONSENT_NSID, "limit": 100}
-    )
-    video_resp = client.com.atproto.repo.list_records(
-        {"repo": client.me.did, "collection": VIDEO_NSID, "limit": 100}
-    )
-    videos_by_uri = {r.uri: _record_value_to_dict(r.value) for r in video_resp.records}
-    consents_with_uri = [
-        (r.uri, _record_value_to_dict(r.value)) for r in consent_resp.records
-    ]
+def export(output_path, repo, purposes, model_classes, modalities, tags, name, description):
+    """Write a Croissant-RAI manifest of one contributor's consented clips."""
+    from consentvid.croissant import Clip, build_manifest
+    from consentvid.identity import display_name, public_client, resolve_did
+    from consentvid.policy import covers, latest_per_video
 
-    if purposes:
-        wanted = set(purposes)
-        consents_with_uri = [
-            (uri, c) for uri, c in consents_with_uri
-            if wanted & set(c.get("purposes", []))
-        ]
-    if tags:
-        wanted = set(tags)
-        consents_with_uri = [
-            (uri, c) for uri, c in consents_with_uri
-            if wanted & set(videos_by_uri.get(c.get("videoUri", ""), {}).get("tags", []))
-        ]
+    did = resolve_did(repo) if repo else _own_did()
+    client = public_client(did)
+    videos = {r.uri: (str(r.cid), to_dict(r.value)) for r in _list_all(client, did, VIDEO_NSID)}
+    consents, cids = [], {}
+    for r in _list_all(client, did, CONSENT_NSID):
+        c = to_dict(r.value)
+        errors = validate_in_repo(CONSENT_NSID, c, did)
+        if errors:
+            _warn(f"skipping invalid consent {r.uri}: {errors[0]}")
+        else:
+            consents.append((r.uri, c))
+            cids[r.uri] = str(r.cid)
+    # Supersession first, expiry second: an expired newer consent must not
+    # revive an older, broader one.
+    best, superseded = latest_per_video(consents)
+    for s in superseded:
+        _warn(f"ignoring superseded consent {s} (a newer one exists for the same video)")
+    for vuri, (curi, c) in list(best.items()):
+        if is_expired(c):
+            _warn(f"skipping expired consent {curi}")
+            del best[vuri]
 
-    manifest = build_manifest(
-        creator_handle=client.me.handle,
-        creator_did=client.me.did,
-        consents_with_uri=consents_with_uri,
-        videos_by_uri=videos_by_uri,
-        name=name,
-        description=description,
-    )
+    handle = display_name(did)
+    clips = []
+    for vuri, (curi, c) in best.items():
+        if vuri not in videos:
+            _warn(f"consent {curi} references missing video {vuri}")
+            continue
+        vcid, v = videos[vuri]
+        if c.get("videoCid") and c["videoCid"] != vcid:
+            _warn(f"skipping {curi}: video record changed after consent was given")
+            continue
+        if not covers(c, purposes=purposes, model_classes=model_classes, modalities=modalities):
+            continue
+        if tags and not set(tags) & set(v.get("tags") or []):
+            continue
+        clips.append(Clip(curi, cids[curi], c, vuri, vcid, v, did, handle))
 
+    name = name or f"consentvid-{handle.replace('.', '-').replace(':', '-')}-{date.today()}"
+    manifest, skipped = build_manifest(clips, name=name, description=description)
+    for clip in skipped:
+        _warn(
+            f"left out {clip.video.get('title')!r}: its bytes aren't publicly reachable "
+            f"(storage kind {clip.video.get('storageRef', {}).get('kind')})"
+        )
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(manifest, indent=2))
-
-    matched = sum(1 for _, c in consents_with_uri if c.get("videoUri") in videos_by_uri)
-    click.echo(f"Wrote {output_path}")
-    click.echo(f"  consents listed:  {len(consent_resp.records)}")
-    click.echo(f"  videos listed:    {len(video_resp.records)}")
-    click.echo(f"  consents matched: {matched} (after filters)")
+    output_path.write_text(json.dumps(manifest, indent=2) + "\n")
+    click.secho(f"Wrote {output_path}: {len(manifest['distribution'])} clip(s) from {handle}", fg="green")
 
 
-def _fetch_record(client, uri):
-    """Fetch a single record by AT-URI; return (did, value_dict). Raises ClickException
-    if the URI is malformed or the record is missing (revoked)."""
-    from consentvid.resync import parse_at_uri
+@main.command()
+@click.argument("uri")
+@click.option("--json", "as_json", is_flag=True)
+def verify(uri, as_json):
+    """Cryptographically verify a record against its author's repo (no login).
 
-    try:
-        did, collection, rkey = parse_at_uri(uri)
-    except ValueError as e:
-        raise click.ClickException(str(e))
-    try:
-        resp = client.com.atproto.repo.get_record(
-            {"repo": did, "collection": collection, "rkey": rkey}
-        )
-    except Exception as e:  # noqa: BLE001
-        raise click.ClickException(f"Could not fetch {uri}: {e}")
-    return did, _record_value_to_dict(resp.value)
-
-
-@main.command("embed-c2pa")
-@click.argument("video_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
-@click.option("--consent", "consent_uri", required=True, help="AT-URI of the consent receipt to embed.")
-@click.option(
-    "--output",
-    "output_path",
-    type=click.Path(dir_okay=False, path_type=Path),
-    default=None,
-    help="Output file. Defaults to <video>.c2pa.<ext>.",
-)
-def embed_c2pa(video_path, consent_uri, output_path):
-    """Embed a signed C2PA consent manifest into a copy of the video file.
-
-    Fetches the consent receipt and the video record it references, then writes
-    the consent terms plus both at:// URIs into the output file's bytes so
-    provenance survives the file leaving the platform. A downstream holder can
-    recover the consent — and re-check revocation via `consentvid resync` — from
-    the file alone. Requires the c2pa extra: pip install -e ".[c2pa]".
+    Checks the commit signature against the DID's key and the Merkle proof of
+    the record's presence or absence, then validates the record.
     """
-    from consentvid import c2pa_embed as ce
-
-    client = get_client()
-    consent_did, consent = _fetch_record(client, consent_uri)
-    video_uri = consent.get("videoUri")
-    if not video_uri:
-        raise click.ClickException("Consent record has no videoUri.")
-    _, video = _fetch_record(client, video_uri)
-
-    if consent_did == client.me.did:
-        handle = client.me.handle
-    else:
-        try:
-            handle = client.com.atproto.repo.describe_repo({"repo": consent_did}).handle
-        except Exception:  # noqa: BLE001
-            handle = consent_did
-
-    if output_path is None:
-        output_path = video_path.with_suffix(f".c2pa{video_path.suffix}")
+    from consentvid.verify import fetch_verified
 
     try:
-        out = ce.embed_consent(
-            video_path=video_path,
-            out_path=output_path,
-            consent_uri=consent_uri,
-            consent=consent,
-            video_uri=video_uri,
-            video=video,
-            contributor_handle=handle,
-            contributor_did=consent_did,
+        at = parse_at_uri(uri)
+    except ValueError as e:
+        raise click.BadParameter(str(e), param_hint="URI") from None
+    rec = fetch_verified(at)
+    errors = validate_in_repo(at.collection, rec.value, at.did) if rec.present else []
+    if as_json:
+        click.echo(
+            json.dumps(
+                {
+                    "uri": uri,
+                    "present": rec.present,
+                    "cid": rec.cid,
+                    "rev": rec.rev,
+                    "proven": rec.proven,
+                    "errors": errors,
+                    "value": rec.value,
+                },
+                indent=2,
+            )
         )
-    except RuntimeError as e:
-        raise click.ClickException(str(e))
-    click.echo(f"Embedded C2PA consent manifest -> {out}")
-    click.echo(f"  consent: {consent_uri}")
-    click.echo(f"  video:   {video_uri}")
-    click.echo(
-        "  note:    signed with a self-signed prototype cert; readers will flag "
-        "the signer as untrusted. Production needs a CA-issued cert."
-    )
+    elif not rec.present:
+        how = "proven absent by a signed repo commit" if rec.proven else "reported absent by the PDS"
+        click.secho(f"ABSENT — {how} (rev {rec.rev or '?'})", fg="red")
+    else:
+        click.secho("PRESENT — signature and Merkle proof verified", fg="green")
+        click.echo(f"  cid: {rec.cid}\n  rev: {rec.rev}")
+        if errors:
+            click.secho("  INVALID: " + "; ".join(errors), fg="red")
+        click.echo(json.dumps(rec.value, indent=2, default=str))
+    if not rec.present or errors:
+        sys.exit(1)
 
 
-@main.command("read-c2pa")
-@click.argument("video_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
-def read_c2pa(video_path):
-    """Read the embedded ConsentVid C2PA manifest back out of a file."""
-    from consentvid import c2pa_embed as ce
-
-    try:
-        man = ce.read_manifest(video_path)
-    except RuntimeError as e:
-        raise click.ClickException(str(e))
-    except Exception as e:  # noqa: BLE001 — no/invalid manifest
-        raise click.ClickException(f"No readable C2PA manifest in {video_path}: {e}")
-    active = man.get("manifests", {}).get(man.get("active_manifest"), {})
-    click.echo(f"validation_state: {man.get('validation_state')}")
-    click.echo(f"title:            {active.get('title')}")
-    receipt = next(
-        (a.get("data") for a in active.get("assertions", [])
-         if a.get("label") == ce.CONSENT_ASSERTION_LABEL),
-        None,
-    )
-    if receipt is None:
-        click.echo("No org.consentvid.consent assertion present.")
-        return
-    click.echo("consent receipt:")
-    click.echo(json.dumps(receipt, indent=2))
-
-
-_RESYNC_MARK = {
-    "valid": "ok",
-    "revoked": "REVOKED",
-    "expired": "EXPIRED",
-    "unattested": "UNATTEST",
-    "unknown": "?",
+_MARK = {
+    "valid": ("ok", "green"),
+    "revoked": ("REVOKED", "red"),
+    "expired": ("EXPIRED", "red"),
+    "modified": ("MODIFIED", "red"),
+    "invalid": ("INVALID", "red"),
+    "unattested": ("UNATTEST", "red"),
+    "unavailable": ("UNAVAIL", "red"),
+    "unknown": ("?", "yellow"),
 }
 
 
@@ -573,113 +935,175 @@ _RESYNC_MARK = {
     "--write",
     "write_path",
     type=click.Path(dir_okay=False, path_type=Path),
-    default=None,
-    help="Write a filtered manifest with revoked/expired clips removed (manifest input only).",
+    help="Write a cleaned manifest without the clips that must be dropped.",
 )
 @click.option(
     "--min-provenance",
-    "min_provenance",
-    default=None,
-    type=click.Choice(["unverified", "selfAttested", "attested"]),
-    help="Drop clips whose live consent is not authorship-attested or is below "
-    "this capture-provenance tier. Default: no provenance filtering.",
+    type=click.Choice(CAPTURE_PROVENANCE),
+    help="Also drop clips whose capture provenance is below this tier.",
 )
-def resync(input_path, write_path, min_provenance):
-    """Re-check consent against the live network and report what must be dropped.
+@click.option("--strict", is_flag=True, help="Also drop clips that couldn't be checked.")
+@click.option("--check", is_flag=True, help="Exit with status 1 if any clip must be dropped.")
+@click.option("--json", "as_json", is_flag=True)
+@click.option("--workers", default=8, show_default=True, help="Parallel checks.")
+def resync(input_path, write_path, min_provenance, strict, check, as_json, workers):
+    """Verify that every clip's consent still stands, before you use a dataset.
 
-    INPUT_PATH is either a Croissant manifest (JSON) or a C2PA-embedded video
-    file — for the latter the consent URI is read straight out of the embedded
-    manifest, so a file that has left the platform can be re-checked on its own.
-
-    Consent is revoked by deleting the receipt from the contributor's repo; this
-    detects that (and expiry) so a consumer can honour the data-release
-    maintenance plan. Clips whose status can't be determined (network error) are
-    reported unknown and NOT dropped.
+    INPUT_PATH is a Croissant manifest or a C2PA-stamped video file. Each
+    consent and video is verified against the contributor's repo with signature
+    and Merkle proofs. Run this before every training run. No login needed.
     """
     from consentvid import resync as rs
 
-    client = get_client()
-
-    # A Croissant manifest is JSON; a media file is not. Detect by parse.
     try:
         manifest = json.loads(input_path.read_bytes())
-        is_manifest = isinstance(manifest, dict)
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        is_manifest = False
-
-    if not is_manifest:
+    except (UnicodeDecodeError, ValueError):
+        manifest = None
+    if isinstance(manifest, dict):
+        items = rs.items_from_manifest(manifest)
+    else:
+        manifest = None
         from consentvid import c2pa_embed as ce
 
         try:
-            receipt = ce.extract_consent_receipt(input_path)
-        except RuntimeError as e:
-            raise click.ClickException(str(e))
-        except Exception as e:  # noqa: BLE001 — not JSON and not a C2PA file
-            raise click.ClickException(
-                f"{input_path} is neither a JSON manifest nor a readable C2PA file: {e}"
-            )
+            receipt, c2pa_state = ce.extract_consent_receipt(input_path)
+        except ConfigError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            raise ConsentVidError(f"{input_path} is neither a manifest nor a readable C2PA file: {e}") from e
         if not receipt:
-            raise click.ClickException(
-                "Embedded C2PA manifest has no org.consentvid.consent assertion."
-            )
-        consent_uri = receipt.get("consentUri")
-        status = rs.consent_status(client, consent_uri, receipt.get("expiresAt"))
-        click.echo(f"  [{_RESYNC_MARK[status]:>7}] {input_path.name}  {consent_uri}")
-        click.echo(f"\nstatus: {status}")
-        if status in rs.DROP_STATUSES:
-            click.echo("This file's consent is no longer valid — do not use it.")
-        if write_path:
-            click.echo("(--write applies to manifest input only; ignored.)")
-        return
+            raise ConsentVidError("embedded C2PA manifest has no org.consentvid.consent assertion")
+        items = [rs.item_from_c2pa(receipt, input_path.name, c2pa_state)]
+    if not items:
+        raise ConsentVidError("no clips with consent receipts found")
 
-    results = rs.resync_manifest(client, manifest, min_provenance=min_provenance)
-    if not results:
-        click.echo("No FileObjects with consent receipts in this manifest.")
-        return
-    for r in results:
-        prov = r.get("captureProvenance") or "n/a"
-        click.echo(f"  [{_RESYNC_MARK[r['status']]:>8}] {r['name']}  ({prov})  {r['consentUri']}")
-    counts = {s: sum(1 for r in results if r["status"] == s) for s in _RESYNC_MARK}
-    click.echo()
-    click.echo(f"valid:      {counts[rs.VALID]}")
-    click.echo(f"revoked:    {counts[rs.REVOKED]}")
-    click.echo(f"expired:    {counts[rs.EXPIRED]}")
-    if counts[rs.UNATTESTED]:
-        click.echo(f"unattested: {counts[rs.UNATTESTED]} (below --min-provenance)")
-    if counts[rs.UNKNOWN]:
-        click.echo(f"unknown:    {counts[rs.UNKNOWN]} (not dropped)")
+    results = rs.check_all(items, min_provenance=min_provenance, workers=workers)
+    drop_statuses = rs.DROP_STATUSES + ((rs.UNKNOWN,) if strict else ())
+    n_drop = sum(r.status in drop_statuses for r in results)
+    if as_json:
+        click.echo(json.dumps([r.as_dict() for r in results], indent=2))
+    else:
+        for r in results:
+            label, color = _MARK[r.status]
+            click.secho(f"  [{label:>8}] ", fg=color, nl=False)
+            click.echo(f"{r.name}" + (f"  — {r.reason}" if r.reason else ""))
+        counts = {s: sum(r.status == s for r in results) for s in rs.STATUSES}
+        click.echo("\n" + ", ".join(f"{s}: {n}" for s, n in counts.items() if n))
+        click.echo(f"{n_drop} of {len(results)} clip(s) must be dropped before use.")
+        if counts[rs.UNKNOWN] and not strict:
+            _warn("some clips couldn't be checked (network); they are kept. Re-run, or use --strict.")
     if write_path:
-        filtered = rs.filter_manifest(manifest, results, now_iso())
+        if manifest is None:
+            raise click.UsageError("--write needs a manifest as input")
+        cleaned = rs.filter_manifest(manifest, results, now_iso(), strict=strict)
         write_path.parent.mkdir(parents=True, exist_ok=True)
-        write_path.write_text(json.dumps(filtered, indent=2))
-        dropped = len(manifest.get("distribution", [])) - len(filtered["distribution"])
-        click.echo(f"\nWrote {write_path} ({dropped} clip(s) dropped).")
+        write_path.write_text(json.dumps(cleaned, indent=2) + "\n")
+        if not as_json:
+            click.echo(f"Wrote {write_path} ({len(cleaned['distribution'])} clip(s)).")
+    if check and n_drop:
+        sys.exit(1)
+
+
+@main.command("embed-c2pa")
+@click.argument("video_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--consent", "consent_uri", required=True, help="AT-URI of the consent receipt.")
+@click.option(
+    "--output",
+    "output_path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="Default: <video>.c2pa.<ext>",
+)
+def embed_c2pa(video_path, consent_uri, output_path):
+    """Stamp a signed C2PA manifest carrying the consent receipt into a copy of
+    the video, so provenance survives the file leaving the platform.
+
+    The file must be exactly the registered bytes. Needs the [c2pa] extra.
+    """
+    from consentvid import c2pa_embed as ce
+    from consentvid.identity import display_name
+    from consentvid.verify import fetch_verified
+
+    try:
+        consent_at = parse_at_uri(consent_uri, CONSENT_NSID)
+    except ValueError as e:
+        raise click.BadParameter(str(e), param_hint="--consent") from None
+    consent = fetch_verified(consent_at)
+    if not consent.present:
+        raise ConsentVidError(f"{consent_uri} does not exist (withdrawn?)")
+    errors = validate_in_repo(CONSENT_NSID, consent.value, consent_at.did)
+    if errors:
+        raise ConsentVidError(f"consent is invalid: {errors[0]}")
+    video_uri = consent.value["videoUri"]
+    video = fetch_verified(video_uri)
+    if not video.present:
+        raise ConsentVidError(f"the consent's video {video_uri} no longer exists")
+    if consent.value.get("videoCid") and consent.value["videoCid"] != video.cid:
+        raise ConsentVidError("the video record changed after consent was given; consent no longer applies")
+    actual = hash_file(video_path)
+    if actual != video.value.get("contentHash"):
+        raise ConsentVidError(
+            f"{video_path.name} is not the registered video\n"
+            f"  file:   {actual}\n  record: {video.value.get('contentHash')}"
+        )
+    output_path = output_path or video_path.with_suffix(f".c2pa{video_path.suffix}")
+    out = ce.embed_consent(
+        video_path=video_path,
+        out_path=output_path,
+        consent_uri=consent_uri,
+        consent_cid=consent.cid,
+        consent=consent.value,
+        video_uri=video_uri,
+        video_cid=video.cid,
+        video=video.value,
+        contributor_handle=display_name(consent_at.did),
+        contributor_did=consent_at.did,
+    )
+    click.secho(f"Embedded C2PA consent manifest -> {out}", fg="green")
+    _warn(
+        "signed with a self-signed prototype certificate; C2PA readers will mark the "
+        "signer untrusted. The stamped file's hash differs from the registered one."
+    )
+
+
+@main.command("read-c2pa")
+@click.argument("video_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+def read_c2pa(video_path):
+    """Show the consent receipt embedded in a C2PA-stamped file."""
+    from consentvid import c2pa_embed as ce
+
+    try:
+        man = ce.read_manifest(video_path)
+    except ConfigError:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise ConsentVidError(f"no readable C2PA manifest in {video_path.name}: {e}") from e
+    active = man.get("manifests", {}).get(man.get("active_manifest"), {})
+    click.echo(f"validation_state: {man.get('validation_state')}")
+    click.echo(f"title:            {active.get('title')}")
+    receipt = next(
+        (a.get("data") for a in active.get("assertions", []) if a.get("label") == ce.CONSENT_ASSERTION_LABEL),
+        None,
+    )
+    if receipt is None:
+        click.echo("No org.consentvid.consent assertion present.")
+        return
+    click.echo(json.dumps(receipt, indent=2))
+    click.echo(f"\nCheck it is still valid: consentvid resync {video_path}")
+
+
+# ------------------------------------------------------------- lexicons ------
 
 
 @main.command("publish-lexicons")
-@click.option("--nsid", "nsids", multiple=True,
-              help="Publish only these NSIDs (default: all lexicons in the repo).")
+@click.option("--nsid", "nsids", multiple=True, help="Only these NSIDs (default: all).")
 def publish_lexicons(nsids):
-    """Publish org.consentvid.* lexicons as com.atproto.lexicon.schema records.
-
-    Writes one schema record per lexicon (rkey = the NSID) to your repo, then
-    prints the DNS TXT record you must add so the network can resolve them. Once
-    the DNS record is live you can write records with validate:true (set
-    CONSENTVID_VALIDATE=1 or pass --validate).
-    """
+    """Publish the lexicons as com.atproto.lexicon.schema records in your repo."""
     from consentvid import lexicons as lx
 
     client = get_client()
     targets = list(nsids) or lx.discover_lexicons()
-    if not targets:
-        raise click.ClickException("No lexicon files found in the repo.")
-
     for nsid in targets:
-        try:
-            lexicon = lx.load_lexicon(nsid)
-        except FileNotFoundError as e:
-            raise click.ClickException(str(e))
-        record = lx.build_schema_record(lexicon)
+        record = lx.build_schema_record(lx.load_lexicon(nsid))
         client.com.atproto.repo.put_record(
             {
                 "repo": client.me.did,
@@ -689,120 +1113,180 @@ def publish_lexicons(nsids):
                 "record": record,
             }
         )
-        click.echo(f"Published {nsid}  ->  at://{client.me.did}/{lx.SCHEMA_COLLECTION}/{nsid}")
-
-    authorities = sorted({lx.nsid_authority(n) for n in targets})
-    click.echo("\nNext step — add these DNS TXT record(s) at your registrar:")
-    for auth in authorities:
-        click.echo(f'  _lexicon.{auth}  IN TXT  "did={client.me.did}"')
-    click.echo(
-        "\nUntil DNS resolves, keep writing with validate:false. For production, "
-        "consider a dedicated DID for the lexicon authority rather than a personal "
-        "bsky.social account. Verify with: consentvid resolve-lexicon <nsid>"
-    )
+        click.echo(f"Published {nsid} -> at://{client.me.did}/{lx.SCHEMA_COLLECTION}/{nsid}")
+    by_authority = {lx.nsid_authority(n): n for n in targets}
+    for auth, nsid in sorted(by_authority.items()):
+        if lx.resolve_did_via_dns(nsid) == client.me.did:
+            click.echo(f"DNS _lexicon.{auth} already points at you.")
+        else:
+            click.echo(f'Add DNS TXT:  _lexicon.{auth}  "did={client.me.did}"')
 
 
 @main.command("resolve-lexicon")
 @click.argument("nsid")
-@click.option("--did", "did_override", default=None,
-              help="Skip DNS and fetch the schema record from this DID directly.")
+@click.option("--did", "did_override", default=None, help="Skip DNS; read from this DID.")
 def resolve_lexicon(nsid, did_override):
-    """Resolve a lexicon the way a validator would: DNS TXT -> DID -> schema record."""
+    """Resolve a lexicon like a validator would (DNS -> DID -> schema record)
+    and compare it with the local copy. No login needed."""
     from consentvid import lexicons as lx
+    from consentvid.identity import public_client
 
-    client = get_client()
-    if did_override:
-        did = did_override
-        click.echo(f"Using DID override: {did}")
-    else:
-        click.echo(f"Looking up DNS TXT {lx.dns_record_name(nsid)} ...")
-        did = lx.resolve_did_via_dns(nsid)
-        if not did:
-            raise click.ClickException(
-                f"No _lexicon TXT record found for {lx.nsid_authority(nsid)}. "
-                "Publish it (see publish-lexicons) or pass --did to test the record fetch."
-            )
-        click.echo(f"  -> did={did}")
-
+    did = did_override or lx.resolve_did_via_dns(nsid)
+    if not did:
+        raise ConsentVidError(f"no TXT record at {lx.dns_record_name(nsid)}")
+    click.echo(f"{lx.dns_record_name(nsid)} -> {did}")
+    resp = public_client(did).com.atproto.repo.get_record(
+        {"repo": did, "collection": lx.SCHEMA_COLLECTION, "rkey": nsid}
+    )
+    click.echo(f"Resolved {resp.uri}")
     try:
-        resp = client.com.atproto.repo.get_record(
-            {"repo": did, "collection": lx.SCHEMA_COLLECTION, "rkey": nsid}
-        )
+        same = lx.schema_matches(lx.load_lexicon(nsid), to_dict(resp.value))
+    except FileNotFoundError:
+        click.echo("(no local copy to compare)")
+        return
+    if same:
+        click.secho("Published schema matches the local lexicon.", fg="green")
+    else:
+        _warn("published schema differs from the local lexicon: run `consentvid publish-lexicons`")
+
+
+# --------------------------------------------------------------- doctor ------
+
+
+@main.command()
+def doctor():
+    """Check your setup: login, tools, storage backends, lexicons, AppView."""
+    from consentvid import appview as av
+    from consentvid import lexicons as lx
+    from consentvid import media, storage
+    from consentvid.identity import public_client
+
+    def line(ok, label, detail=""):
+        mark, color = {True: ("ok", "green"), False: ("!!", "red"), None: ("--", "yellow")}[ok]
+        click.secho(f"  [{mark}] ", fg=color, nl=False)
+        click.echo(label + (f": {detail}" if detail else ""))
+
+    click.echo(f"consentvid {__version__}, Python {sys.version.split()[0]}")
+    line(sys.version_info < (3, 14), "Python < 3.14", "the atproto SDK breaks on 3.14")
+    try:
+        client = get_client()
+        line(True, "logged in", f"{client.me.handle} ({client.me.did})")
     except Exception as e:  # noqa: BLE001
-        raise click.ClickException(f"Schema record not found for {nsid} in {did}: {e}")
-    value = _record_value_to_dict(resp.value)
-    click.echo(f"Resolved {nsid}:")
-    click.echo(f"  uri:  {resp.uri}")
-    click.echo(f"  id:   {value.get('id')}")
-    click.echo(f"  defs: {list((value.get('defs') or {}).keys())}")
+        line(False, "logged in", str(e).splitlines()[0])
+    line(
+        media.have_ffprobe() or None,
+        "ffprobe",
+        "duration, size, metadata check" if media.have_ffprobe() else "missing (brew install ffmpeg)",
+    )
+    line(
+        media.have_ffmpeg() or None,
+        "ffmpeg",
+        "metadata stripping" if media.have_ffmpeg() else "missing: can't strip GPS/device tags",
+    )
+    for kind in storage.UPLOAD_KINDS:
+        ok = storage.configured(kind)
+        line(ok or None, f"storage {kind}", "configured" if ok else "not configured")
+    click.echo(f"       default storage: {_default_storage()}")
+    try:
+        import c2pa  # noqa: F401
+
+        line(True, "c2pa extra", "installed")
+    except ImportError:
+        line(None, "c2pa extra", 'not installed (pip install "consentvid[c2pa]")')
+    for nsid in lx.discover_lexicons():
+        try:
+            did = lx.resolve_did_via_dns(nsid)
+            if not did:
+                line(None, f"lexicon {nsid}", "no _lexicon DNS record")
+                continue
+            pub = to_dict(
+                public_client(did)
+                .com.atproto.repo.get_record({"repo": did, "collection": lx.SCHEMA_COLLECTION, "rkey": nsid})
+                .value
+            )
+            same = lx.schema_matches(lx.load_lexicon(nsid), pub)
+            line(
+                same,
+                f"lexicon {nsid}",
+                "published, up to date" if same else "published copy is outdated: run publish-lexicons",
+            )
+        except Exception as e:  # noqa: BLE001
+            line(False, f"lexicon {nsid}", str(e)[:100])
+    if av.db_path().exists():
+        s = av.stats(av.connect())
+        line(True, "appview index", f"{s['consents']} consents, {s['videos']} videos, cursor {s['cursor']}")
+    else:
+        line(None, "appview index", "not created yet")
+
+
+# -------------------------------------------------------------- appview ------
 
 
 @main.group()
 def appview():
-    """AppView: index org.consentvid.* records across users into a local SQLite db."""
-    pass
+    """Index ConsentVid records from the whole network (local SQLite)."""
 
 
 @appview.command("backfill")
-@click.argument("handle_or_did")
-def appview_backfill(handle_or_did):
-    """Index existing records from a specific user's repo (run before live indexing)."""
+@click.argument("repos", nargs=-1, required=True)
+def appview_backfill(repos):
+    """Index existing records from one or more contributors (handles or DIDs)."""
     from consentvid import appview as av
+    from consentvid.identity import public_client, resolve_did
 
-    client = get_client()
-    if handle_or_did.startswith("did:"):
-        did = handle_or_did
-    else:
-        resp = client.com.atproto.identity.resolve_handle({"handle": handle_or_did})
-        did = resp.did
     conn = av.connect()
-    counts = {"videos": 0, "consents": 0}
-    for collection, ingest, key in (
-        (av.VIDEO_NSID, av.upsert_video, "videos"),
-        (av.CONSENT_NSID, av.upsert_consent, "consents"),
-    ):
-        cursor = None
-        while True:
-            params = {"repo": did, "collection": collection, "limit": 100}
-            if cursor:
-                params["cursor"] = cursor
-            resp = client.com.atproto.repo.list_records(params)
-            for r in resp.records:
-                rkey = r.uri.rsplit("/", 1)[-1]
-                value = _record_value_to_dict(r.value)
-                if validate_record(collection, value):
-                    click.echo(f"  skipped (invalid): {r.uri}")
-                    continue
-                ingest(conn, r.uri, did, rkey, str(r.cid), value)
-                counts[key] += 1
-            cursor = resp.cursor
-            if not cursor:
-                break
-    conn.commit()
-    click.echo(f"Backfilled from {did}:")
-    click.echo(f"  videos:   {counts['videos']}")
-    click.echo(f"  consents: {counts['consents']}")
+    for repo in repos:
+        did = resolve_did(repo)
+        client = public_client(did)
+        stored = invalid = 0
+        for collection in (VIDEO_NSID, CONSENT_NSID):
+            live = set()
+            for r in _list_all(client, did, collection):
+                live.add(r.uri)
+                errors = av.ingest(
+                    conn, collection, r.uri, did, parse_at_uri(r.uri).rkey, str(r.cid), to_dict(r.value)
+                )
+                if errors:
+                    invalid += 1
+                    click.echo(f"  skipped {r.uri}: {errors[0]}")
+                else:
+                    stored += 1
+            # Anything indexed earlier that's gone now was deleted while we
+            # weren't watching.
+            table = "videos" if collection == VIDEO_NSID else "consents"
+            gone = [
+                row["uri"]
+                for row in conn.execute(f"SELECT uri FROM {table} WHERE did = ?", (did,)).fetchall()
+                if row["uri"] not in live
+            ]
+            for uri in gone:
+                if collection == VIDEO_NSID:
+                    av.delete_video(conn, uri)
+                else:
+                    av.revoke_consent(conn, uri, "consent deleted")
+        av.set_account_status(conn, did, True, None)
+        conn.commit()
+        click.echo(f"{repo}: {stored} record(s) indexed, {invalid} skipped")
 
 
 @appview.command("index")
-@click.option(
-    "--stop-after",
-    type=int,
-    default=None,
-    help="Process N events then exit (useful for testing).",
-)
+@click.option("--stop-after", type=int, default=None, help="Exit after N relevant events.")
 def appview_index(stop_after):
-    """Subscribe to Jetstream and index org.consentvid.* records (long-running)."""
+    """Follow the firehose (Jetstream) and keep the index current. Resumes from
+    where it stopped."""
     from consentvid import appview as av
 
     conn = av.connect()
-    click.echo(f"Indexing into {av.db_path()} (Ctrl-C to stop)")
-
-    def on_event(op, uri):
-        click.echo(f"  [{op}] {uri}")
-
+    s = av.stats(conn)
+    click.echo(
+        f"Indexing into {av.db_path()}"
+        + (f", resuming from {s['cursor']}" if s["cursor"] else "")
+        + " (Ctrl-C to stop)"
+    )
     try:
-        n = asyncio.run(av.index_loop(conn, on_event=on_event, stop_after=stop_after))
+        n = asyncio.run(
+            av.index_loop(conn, on_event=lambda op, x: click.echo(f"  [{op}] {x}"), stop_after=stop_after)
+        )
         click.echo(f"Processed {n} events.")
     except KeyboardInterrupt:
         click.echo("\nStopped.")
@@ -810,120 +1294,132 @@ def appview_index(stop_after):
 
 @appview.command("stats")
 def appview_stats():
-    """Show index counts."""
+    """Show index counts and freshness."""
     from consentvid import appview as av
 
-    conn = av.connect()
-    n_videos = conn.execute("SELECT COUNT(*) FROM videos").fetchone()[0]
-    n_consents = conn.execute("SELECT COUNT(*) FROM consents").fetchone()[0]
-    n_revoked = conn.execute(
-        "SELECT COUNT(*) FROM consents WHERE revoked_at IS NOT NULL"
-    ).fetchone()[0]
-    n_dids = conn.execute(
-        "SELECT COUNT(DISTINCT did) FROM consents"
-    ).fetchone()[0]
-    click.echo(f"videos:        {n_videos}")
-    click.echo(f"consents:      {n_consents}  ({n_revoked} revoked)")
-    click.echo(f"contributors:  {n_dids}")
+    for k, v in av.stats(av.connect()).items():
+        click.echo(f"{k + ':':<19}{v}")
 
 
 @appview.command("revocations")
-@click.option("--since", default=None, help="Only revocations after this ISO timestamp (incremental re-sync).")
-@click.option("--json", "as_json", is_flag=True, default=False, help="Emit JSON.")
+@click.option("--since", default=None, help="Only revocations after this ISO timestamp.")
+@click.option("--json", "as_json", is_flag=True)
 def appview_revocations(since, as_json):
-    """List revoked consent receipts from the index — a feed consumers re-sync against.
-
-    The indexer marks a consent revoked when its record is deleted on the
-    firehose. Poll this with --since <last-seen-timestamp> to pull only new
-    revocations and drop the corresponding clips from a dataset.
-    """
+    """Feed of withdrawn consents (poll with --since for incremental re-sync)."""
     from consentvid import appview as av
 
-    conn = av.connect()
-    where = ["revoked_at IS NOT NULL"]
-    args = []
-    if since:
-        where.append("revoked_at > ?")
-        args.append(since)
-    rows = conn.execute(
-        f"SELECT uri, did, video_uri, revoked_at FROM consents "
-        f"WHERE {' AND '.join(where)} ORDER BY revoked_at DESC",
-        args,
-    ).fetchall()
+    rows = av.revocations(av.connect(), since)
     if as_json:
         click.echo(json.dumps([dict(r) for r in rows], indent=2))
         return
-    if not rows:
-        click.echo("No revocations recorded." + (f" (since {since})" if since else ""))
-        return
     for r in rows:
-        click.echo(f"{r['revoked_at']}  {r['uri']}")
-    click.echo(f"\n{len(rows)} revocation(s).")
+        click.echo(f"{r['revoked_at']}  {r['uri']}  ({r['revoke_reason'] or 'deleted'})")
+    click.echo(f"{len(rows)} revocation(s)" + (f" since {since}" if since else "") + ".")
 
 
 @appview.command("query")
-@click.option("--purpose", multiple=True, help="Filter by purpose. Repeatable.")
-@click.option("--model-class", "model_classes", multiple=True, help="Filter by model class. Repeatable.")
-@click.option("--capture-provenance", "capture_provenance", multiple=True,
-              help="Filter by capture-provenance tier (attested/selfAttested/unverified). Repeatable.")
-@click.option("--did", default=None, help="Filter by contributor DID.")
-@click.option("--include-revoked", is_flag=True, default=False)
-@click.option("--limit", default=20, type=int)
-def appview_query(purpose, model_classes, capture_provenance, did, include_revoked, limit):
-    """Query indexed consent receipts."""
+@_filter_options
+@click.option("--capture-provenance", "provenance", multiple=True, type=click.Choice(CAPTURE_PROVENANCE))
+@click.option("--repo", default=None, help="Only this contributor (handle or DID).")
+@click.option("--include-revoked", is_flag=True, help="Also show withdrawn/inactive consents.")
+@click.option("--include-expired", is_flag=True)
+@click.option("--limit", default=20, show_default=True)
+@click.option("--json", "as_json", is_flag=True)
+def appview_query(
+    purposes, model_classes, modalities, provenance, repo, include_revoked, include_expired, limit, as_json
+):
+    """Find consented clips across contributors."""
     from consentvid import appview as av
+    from consentvid.identity import resolve_did
 
-    conn = av.connect()
-    where, args = [], []
-    if not include_revoked:
-        where.append("c.revoked_at IS NULL")
-    if did:
-        where.append("c.did = ?")
-        args.append(did)
-    if capture_provenance:
-        where.append(f"c.capture_provenance IN ({','.join('?' * len(capture_provenance))})")
-        args.extend(capture_provenance)
-    where_sql = "WHERE " + " AND ".join(where) if where else ""
-    rows = conn.execute(
-        f"""
-        SELECT c.uri, c.did, c.video_uri, c.purposes, c.model_classes, c.modalities,
-               c.capture_provenance, c.authorship_attested,
-               c.created_at, v.title, v.duration_ms
-        FROM consents c
-        LEFT JOIN videos v ON v.uri = c.video_uri
-        {where_sql}
-        ORDER BY c.created_at DESC
-        LIMIT ?
-        """,
-        (*args, limit * 4),
-    ).fetchall()
-
-    def matches(row):
-        if purpose and not (set(purpose) & set(json.loads(row["purposes"] or "[]"))):
-            return False
-        if model_classes and not (
-            set(model_classes) & set(json.loads(row["model_classes"] or "[]"))
-        ):
-            return False
-        return True
-
-    rows = [r for r in rows if matches(r)][:limit]
-    if not rows:
-        click.echo("No matching consents.")
+    rows = av.query_consents(
+        av.connect(),
+        purposes=purposes,
+        model_classes=model_classes,
+        modalities=modalities,
+        provenance=provenance,
+        did=resolve_did(repo) if repo else None,
+        include_revoked=include_revoked,
+        include_expired=include_expired,
+        limit=limit,
+    )
+    if as_json:
+        click.echo(
+            json.dumps(
+                [{k: r[k] for k in r.keys() if k not in ("record", "video_record")} for r in rows], indent=2
+            )
+        )
         return
     for r in rows:
-        click.echo(r["uri"])
-        click.echo(f"  did:        {r['did']}")
-        click.echo(f"  title:      {r['title']!r}")
-        click.echo(f"  video_uri:  {r['video_uri']}")
-        click.echo(f"  purposes:      {r['purposes']}")
-        click.echo(f"  model_classes: {r['model_classes']}")
-        click.echo(f"  modalities:    {r['modalities']}")
+        state = f"  REVOKED ({r['revoke_reason']})" if r["revoked_at"] else ""
+        click.secho(f"{r['title']!r}{state}", bold=True)
         click.echo(
-            f"  provenance:    {r['capture_provenance']} "
-            f"(authorshipAttested={bool(r['authorship_attested'])})"
+            f"  consent:    {r['uri']}\n  purposes:   {', '.join(json.loads(r['purposes']))}"
+            f"\n  models:     {', '.join(json.loads(r['model_classes']))}"
+            f"\n  modalities: {', '.join(json.loads(r['modalities']))}"
+            f"\n  provenance: {r['capture_provenance']}"
         )
-        click.echo()
+    click.echo(f"{len(rows)} result(s).")
+
+
+@appview.command("export")
+@click.argument("output_path", type=click.Path(dir_okay=False, path_type=Path))
+@_filter_options
+@click.option("--capture-provenance", "provenance", multiple=True, type=click.Choice(CAPTURE_PROVENANCE))
+@click.option("--name", default=None, help="Dataset name.")
+@click.option("--description", default=None)
+def appview_export(output_path, purposes, model_classes, modalities, provenance, name, description):
+    """Build a multi-contributor Croissant-RAI manifest from the index.
+
+    Run `consentvid resync` on the result before use: the index is fed by an
+    unsigned firehose, resync verifies everything cryptographically.
+    """
+    from consentvid import appview as av
+    from consentvid.croissant import Clip, build_manifest
+    from consentvid.identity import display_name
+
+    rows = av.query_consents(
+        av.connect(),
+        purposes=purposes,
+        model_classes=model_classes,
+        modalities=modalities,
+        provenance=provenance,
+        limit=None,
+    )
+    clips, missing = [], 0
+    for r in rows:
+        if not r["record"] or not r["video_record"]:
+            missing += 1
+            continue
+        clips.append(
+            Clip(
+                r["uri"],
+                r["cid"],
+                json.loads(r["record"]),
+                r["video_uri"],
+                r["current_video_cid"],
+                json.loads(r["video_record"]),
+                r["did"],
+                display_name(r["did"]),
+            )
+        )
+    if missing:
+        _warn(
+            f"{missing} indexed consent(s) predate full-record storage; "
+            "re-run `appview backfill` for their contributors"
+        )
+    manifest, skipped = build_manifest(
+        clips, name=name or f"consentvid-{date.today()}", description=description
+    )
+    if skipped:
+        _warn(f"left out {len(skipped)} clip(s) without publicly reachable bytes")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(manifest, indent=2) + "\n")
+    click.secho(
+        f"Wrote {output_path}: {len(manifest['distribution'])} clip(s). "
+        f"Next: consentvid resync {output_path}",
+        fg="green",
+    )
 
 
 if __name__ == "__main__":

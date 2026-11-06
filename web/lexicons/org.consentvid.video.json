@@ -8,44 +8,85 @@
       "key": "tid",
       "record": {
         "type": "object",
-        "required": ["title", "contentHash", "storageRef", "createdAt"],
+        "required": [
+          "title",
+          "contentHash",
+          "storageRef",
+          "createdAt"
+        ],
         "properties": {
-          "title": {"type": "string", "maxLength": 300},
-          "description": {"type": "string", "maxLength": 3000},
+          "title": {
+            "type": "string",
+            "maxLength": 300
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 3000
+          },
           "contentHash": {
             "type": "string",
             "description": "SHA-256 of the video bytes, hex-encoded with 'sha256-' prefix.",
             "maxLength": 80
           },
+          "mimeType": {
+            "type": "string",
+            "maxLength": 128,
+            "description": "MIME type of the video bytes, e.g. video/mp4."
+          },
           "durationMs": {
             "type": "integer",
             "description": "Duration in milliseconds. ATproto records have no float type."
           },
-          "width": {"type": "integer"},
-          "height": {"type": "integer"},
+          "width": {
+            "type": "integer"
+          },
+          "height": {
+            "type": "integer"
+          },
           "language": {
             "type": "string",
             "description": "BCP-47 language tag for primary audio if any."
           },
           "tags": {
             "type": "array",
-            "items": {"type": "string", "maxLength": 64},
+            "items": {
+              "type": "string",
+              "maxLength": 64
+            },
             "maxLength": 32
           },
-          "storageRef": {"type": "ref", "ref": "#storageRef"},
-          "createdAt": {"type": "string", "format": "datetime"}
+          "storageRef": {
+            "type": "ref",
+            "ref": "#storageRef"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "datetime"
+          }
         }
       }
     },
     "storageRef": {
       "type": "object",
-      "required": ["kind", "value"],
+      "required": [
+        "kind",
+        "value"
+      ],
       "properties": {
         "kind": {
           "type": "string",
-          "knownValues": ["url", "local", "ipfs", "r2", "peertube"]
+          "knownValues": [
+            "url",
+            "local",
+            "ipfs",
+            "r2",
+            "peertube"
+          ]
         },
-        "value": {"type": "string"}
+        "value": {
+          "type": "string",
+          "description": "Where the bytes live: a URL (url/r2/peertube), a CID (ipfs), or for 'local' an opaque contributor-side name. Never an absolute filesystem path (records are public)."
+        }
       }
     }
   }

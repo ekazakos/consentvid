@@ -8,19 +8,39 @@
       "key": "tid",
       "record": {
         "type": "object",
-        "required": ["videoUri", "modalities", "purposes", "modelClasses", "compensation", "revocable", "authorshipAttested", "createdAt"],
+        "required": [
+          "videoUri",
+          "modalities",
+          "purposes",
+          "modelClasses",
+          "compensation",
+          "revocable",
+          "authorshipAttested",
+          "createdAt"
+        ],
         "properties": {
           "videoUri": {
             "type": "string",
             "format": "at-uri",
-            "description": "AT-URI of the org.consentvid.video record this consent applies to."
+            "description": "AT-URI of the org.consentvid.video record this consent applies to. Must be in the same repo as this consent."
+          },
+          "videoCid": {
+            "type": "string",
+            "format": "cid",
+            "description": "CID of the exact org.consentvid.video record version this consent applies to (together with videoUri, a strong reference). If the video record is later rewritten, this consent no longer applies to it."
           },
           "modalities": {
             "type": "array",
             "minLength": 1,
             "items": {
               "type": "string",
-              "knownValues": ["video", "audio", "transcript", "face", "voice"]
+              "knownValues": [
+                "video",
+                "audio",
+                "transcript",
+                "face",
+                "voice"
+              ]
             }
           },
           "purposes": {
@@ -28,7 +48,12 @@
             "minLength": 1,
             "items": {
               "type": "string",
-              "knownValues": ["training", "evaluation", "benchmarking", "researchOnly"]
+              "knownValues": [
+                "training",
+                "evaluation",
+                "benchmarking",
+                "researchOnly"
+              ]
             }
           },
           "modelClasses": {
@@ -36,7 +61,12 @@
             "minLength": 1,
             "items": {
               "type": "string",
-              "knownValues": ["academic", "openWeights", "commercial", "foundationModel"]
+              "knownValues": [
+                "academic",
+                "openWeights",
+                "commercial",
+                "foundationModel"
+              ]
             }
           },
           "expiresAt": {
@@ -46,24 +76,42 @@
           },
           "compensation": {
             "type": "string",
-            "knownValues": ["none", "creditOnly", "monetary"]
+            "knownValues": [
+              "none",
+              "creditOnly",
+              "monetary"
+            ]
           },
-          "revocable": {"type": "boolean"},
+          "revocable": {
+            "type": "boolean",
+            "description": "Whether the contributor may withdraw consent. Consent to processing personal data (faces, voices) must be withdrawable (GDPR Art. 7(3)); ConsentVid clients always write true. Withdrawal is performed by deleting this record."
+          },
           "authorshipAttested": {
             "type": "boolean",
             "description": "The contributor affirms, under their signing key, that they recorded this video themselves (or are otherwise its rightful author) and are authorized to grant this consent. A consent receipt is invalid unless this is true; uploading someone else's video and consenting to its use would be unlawful."
           },
           "rightsBasis": {
             "type": "string",
-            "knownValues": ["ownRecording", "licensed", "otherRightsHolder"],
+            "knownValues": [
+              "ownRecording",
+              "licensed",
+              "otherRightsHolder"
+            ],
             "description": "Basis on which the contributor holds the right to grant consent: 'ownRecording' = they captured it, 'licensed' = licensed from the creator, 'otherRightsHolder' = other documented basis."
           },
           "captureProvenance": {
             "type": "string",
-            "knownValues": ["attested", "selfAttested", "unverified"],
+            "knownValues": [
+              "attested",
+              "selfAttested",
+              "unverified"
+            ],
             "description": "Strength of the capture-provenance guarantee. 'attested' = capture-time cryptographic provenance (e.g. C2PA/CAWG) binds the recording to the contributor's DID; 'selfAttested' = signed authorship attestation only; 'unverified' = neither."
           },
-          "createdAt": {"type": "string", "format": "datetime"}
+          "createdAt": {
+            "type": "string",
+            "format": "datetime"
+          }
         }
       }
     }

@@ -16,38 +16,33 @@ embed and read back fine but will NOT chain to the C2PA trust list — a reader
 flags the signer as untrusted. Production must use a CA-issued document-signing
 certificate; swap the PEMs at the paths below and nothing else changes.
 """
+
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
+from consentvid import __version__
+from consentvid.errors import ConfigError
+from consentvid.records import mime_for as _mime
+
 CONSENT_ASSERTION_LABEL = "org.consentvid.consent"
-_SIGNER_DIR = Path.home() / ".consentvid" / "c2pa"
+_SIGNER_DIR = Path(os.environ.get("CONSENTVID_HOME", Path.home() / ".consentvid")) / "c2pa"
 _CERT_PATH = _SIGNER_DIR / "signer.cert.pem"
 _KEY_PATH = _SIGNER_DIR / "signer.key.pem"
-
-_MIME_BY_SUFFIX = {
-    ".mp4": "video/mp4",
-    ".mov": "video/quicktime",
-    ".m4v": "video/mp4",
-    ".webm": "video/webm",
-    ".mkv": "video/x-matroska",
-    ".avi": "video/x-msvideo",
-}
 
 
 def _require_c2pa():
     try:
         import c2pa  # noqa: F401
     except ImportError as e:
-        raise RuntimeError(
-            'c2pa-python is required. Install with: pip install -e ".[c2pa]"'
-        ) from e
+        raise ConfigError('c2pa-python is required: pip install "consentvid[c2pa]"') from e
     return c2pa
 
 
 def mime_for(path: Path) -> str:
-    return _MIME_BY_SUFFIX.get(path.suffix.lower(), "application/octet-stream")
+    return _mime(path) or "application/octet-stream"
 
 
 def ensure_signer_cert() -> tuple[Path, Path]:
@@ -68,20 +63,20 @@ def ensure_signer_cert() -> tuple[Path, Path]:
         from cryptography.hazmat.primitives.asymmetric import ec
         from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
     except ImportError as e:
-        raise RuntimeError(
-            'cryptography is required to generate a signer. Install with: pip install -e ".[c2pa]"'
-        ) from e
+        raise ConfigError('cryptography is required: pip install "consentvid[c2pa]"') from e
     import datetime
 
     # Fixed validity window: keeps the prototype cert deterministic.
-    not_before = datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc)
-    not_after = datetime.datetime(2035, 1, 1, tzinfo=datetime.timezone.utc)
+    not_before = datetime.datetime(2025, 1, 1, tzinfo=datetime.UTC)
+    not_after = datetime.datetime(2035, 1, 1, tzinfo=datetime.UTC)
 
     root_key = ec.generate_private_key(ec.SECP256R1())
-    root_name = x509.Name([
-        x509.NameAttribute(NameOID.COMMON_NAME, "ConsentVid Prototype Root CA"),
-        x509.NameAttribute(NameOID.ORGANIZATION_NAME, "ConsentVid"),
-    ])
+    root_name = x509.Name(
+        [
+            x509.NameAttribute(NameOID.COMMON_NAME, "ConsentVid Prototype Root CA"),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "ConsentVid"),
+        ]
+    )
     root_cert = (
         x509.CertificateBuilder()
         .subject_name(root_name)
@@ -93,23 +88,29 @@ def ensure_signer_cert() -> tuple[Path, Path]:
         .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
         .add_extension(
             x509.KeyUsage(
-                digital_signature=False, content_commitment=False, key_encipherment=False,
-                data_encipherment=False, key_agreement=False, key_cert_sign=True,
-                crl_sign=True, encipher_only=False, decipher_only=False,
+                digital_signature=False,
+                content_commitment=False,
+                key_encipherment=False,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=True,
+                crl_sign=True,
+                encipher_only=False,
+                decipher_only=False,
             ),
             critical=True,
         )
-        .add_extension(
-            x509.SubjectKeyIdentifier.from_public_key(root_key.public_key()), critical=False
-        )
+        .add_extension(x509.SubjectKeyIdentifier.from_public_key(root_key.public_key()), critical=False)
         .sign(root_key, hashes.SHA256())
     )
 
     leaf_key = ec.generate_private_key(ec.SECP256R1())
-    leaf_name = x509.Name([
-        x509.NameAttribute(NameOID.COMMON_NAME, "ConsentVid Prototype Signer"),
-        x509.NameAttribute(NameOID.ORGANIZATION_NAME, "ConsentVid"),
-    ])
+    leaf_name = x509.Name(
+        [
+            x509.NameAttribute(NameOID.COMMON_NAME, "ConsentVid Prototype Signer"),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "ConsentVid"),
+        ]
+    )
     leaf_cert = (
         x509.CertificateBuilder()
         .subject_name(leaf_name)
@@ -121,9 +122,15 @@ def ensure_signer_cert() -> tuple[Path, Path]:
         .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
         .add_extension(
             x509.KeyUsage(
-                digital_signature=True, content_commitment=False, key_encipherment=False,
-                data_encipherment=False, key_agreement=False, key_cert_sign=False,
-                crl_sign=False, encipher_only=False, decipher_only=False,
+                digital_signature=True,
+                content_commitment=False,
+                key_encipherment=False,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=False,
+                crl_sign=False,
+                encipher_only=False,
+                decipher_only=False,
             ),
             critical=True,
         )
@@ -131,9 +138,7 @@ def ensure_signer_cert() -> tuple[Path, Path]:
             x509.ExtendedKeyUsage([ExtendedKeyUsageOID.EMAIL_PROTECTION]),
             critical=False,
         )
-        .add_extension(
-            x509.SubjectKeyIdentifier.from_public_key(leaf_key.public_key()), critical=False
-        )
+        .add_extension(x509.SubjectKeyIdentifier.from_public_key(leaf_key.public_key()), critical=False)
         .add_extension(
             x509.AuthorityKeyIdentifier.from_issuer_public_key(root_key.public_key()),
             critical=False,
@@ -178,17 +183,17 @@ def build_signer():
         r, s = utils.decode_dss_signature(der)
         return r.to_bytes(32, "big") + s.to_bytes(32, "big")
 
-    return c2pa.Signer.from_callback(
-        _sign, c2pa.C2paSigningAlg.ES256, certs_pem, tsa_url=None
-    )
+    return c2pa.Signer.from_callback(_sign, c2pa.C2paSigningAlg.ES256, certs_pem, tsa_url=None)
 
 
 def build_manifest_definition(
     *,
     video_path: Path,
     consent_uri: str,
+    consent_cid: str,
     consent: dict,
     video_uri: str,
+    video_cid: str,
     video: dict,
     contributor_handle: str,
     contributor_did: str,
@@ -196,7 +201,9 @@ def build_manifest_definition(
     """Assemble the C2PA manifest definition with the consent assertion."""
     receipt = {
         "consentUri": consent_uri,
+        "consentCid": consent_cid,
         "videoUri": video_uri,
+        "videoCid": video_cid,
         "contentHash": video.get("contentHash"),
         "contributor": {"handle": contributor_handle, "did": contributor_did},
         "purposes": consent.get("purposes", []),
@@ -215,7 +222,7 @@ def build_manifest_definition(
         ),
     }
     return {
-        "claim_generator_info": [{"name": "consentvid", "version": "0.0.1"}],
+        "claim_generator_info": [{"name": "consentvid", "version": __version__}],
         "title": video.get("title") or video_path.name,
         "format": mime_for(video_path),
         "assertions": [
@@ -237,9 +244,7 @@ def build_manifest_definition(
             {
                 "label": "c2pa.actions",
                 "data": {
-                    "actions": [
-                        {"action": "c2pa.created", "softwareAgent": "consentvid/0.0.1"}
-                    ]
+                    "actions": [{"action": "c2pa.created", "softwareAgent": f"consentvid/{__version__}"}]
                 },
             },
         ],
@@ -251,8 +256,10 @@ def embed_consent(
     video_path: Path,
     out_path: Path,
     consent_uri: str,
+    consent_cid: str,
     consent: dict,
     video_uri: str,
+    video_cid: str,
     video: dict,
     contributor_handle: str,
     contributor_did: str,
@@ -262,8 +269,10 @@ def embed_consent(
     manifest = build_manifest_definition(
         video_path=video_path,
         consent_uri=consent_uri,
+        consent_cid=consent_cid,
         consent=consent,
         video_uri=video_uri,
+        video_cid=video_cid,
         video=video,
         contributor_handle=contributor_handle,
         contributor_did=contributor_did,
@@ -284,12 +293,18 @@ def read_manifest(path: Path) -> dict:
     return json.loads(reader.json())
 
 
-def extract_consent_receipt(path: Path) -> dict | None:
-    """Return the org.consentvid.consent assertion data from an embedded file,
-    or None if the file carries a C2PA manifest without that assertion."""
+def extract_consent_receipt(path: Path) -> tuple[dict | None, str]:
+    """Return (org.consentvid.consent assertion data or None, validation state).
+
+    The state is c2pa's verdict on the file: "Trusted" (signer chains to the
+    trust list), "Valid" (intact, but signer untrusted) or "Invalid" (bytes or
+    manifest altered after signing). Callers must not trust a receipt from an
+    Invalid file.
+    """
     man = read_manifest(path)
+    state = man.get("validation_state") or ("Invalid" if man.get("validation_status") else "unknown")
     active = man.get("manifests", {}).get(man.get("active_manifest"), {})
     for assertion in active.get("assertions", []):
         if assertion.get("label") == CONSENT_ASSERTION_LABEL:
-            return assertion.get("data")
-    return None
+            return assertion.get("data"), state
+    return None, state

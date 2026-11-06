@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ConsentVid — dataset terms of use</title>
+<meta name="description" content="How use of ConsentVid datasets is governed: by each clip's signed consent receipt, not a blanket licence.">
+<link rel="stylesheet" href="styles.css">
+<style>
+  .terms{max-width:720px;margin:0 auto;padding:64px 20px 96px;line-height:1.65}
+  .terms h1{font-family:Fraunces,Georgia,serif;font-weight:500;font-size:clamp(30px,5vw,42px);margin:0 0 8px}
+  .terms h2{font-family:Fraunces,Georgia,serif;font-weight:500;font-size:22px;margin:36px 0 8px}
+  .terms code{font-family:"JetBrains Mono",ui-monospace,monospace;font-size:.92em}
+  .terms li{margin:6px 0}
+</style>
+</head>
+<body>
+<main class="terms">
+  <p><a href="/">← consentvid.org</a></p>
+  <h1>Dataset terms of use</h1>
+  <p>ConsentVid datasets have no blanket licence. Each clip may be used only within the terms of
+  its own <strong>consent receipt</strong>: a record in the contributor's ATproto repository, signed
+  by their key, referenced from the manifest as <code>cv:consentReceipt</code>.</p>
+
+  <h2>What a receipt grants</h2>
+  <ul>
+    <li><strong>purposes</strong>: e.g. training, evaluation, benchmarking, researchOnly.</li>
+    <li><strong>modelClasses</strong>: who may use it, e.g. academic, openWeights, commercial, foundationModel.</li>
+    <li><strong>modalities</strong>: which signals, e.g. video, audio, transcript, face, voice.</li>
+    <li><strong>expiresAt</strong>: optional end date of the permission.</li>
+  </ul>
+  <p>A use is permitted only if the receipt lists <em>every</em> applicable purpose, model class and
+  modality. Anything not listed is not granted.</p>
+
+  <h2>Withdrawal</h2>
+  <p>Contributors can withdraw consent at any time by deleting the receipt (consent to processing
+  personal data must be withdrawable, GDPR Art. 7(3)). Before every use, and at least before each
+  training run, run:</p>
+  <p><code>consentvid resync manifest.json --write manifest.clean.json</code></p>
+  <p>and use only the clips that remain. <code>resync</code> verifies each receipt against the
+  contributor's signed repository; withdrawn, expired or modified clips must be deleted from your
+  copies.</p>
+
+  <h2>Attribution and authorship</h2>
+  <p>Cite the dataset as given in the manifest's <code>citeAs</code>. Contributors attest, under their
+  signing key, that they recorded each clip or otherwise hold the rights to grant consent. If you
+  believe a clip was contributed without that right, report it to the contributor's PDS operator and
+  stop using it.</p>
+</main>
+</body>
+</html>

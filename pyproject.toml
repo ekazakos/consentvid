@@ -1,15 +1,17 @@
 [project]
 name = "consentvid"
-version = "0.0.1"
+dynamic = ["version"]
 description = "Consent-first video dataset platform on ATproto"
-requires-python = ">=3.10"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"  # atproto SDK has a circular import on 3.14
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
 dependencies = [
-    "atproto>=0.0.55",
+    "atproto>=0.0.65,<0.1",
     "click>=8.1",
     "python-dotenv>=1.0",
     "websockets>=13.0",
+    "dnspython>=2.6",
 ]
 
 [project.optional-dependencies]
@@ -18,19 +20,41 @@ ipfs = ["httpx>=0.27"]
 peertube = ["httpx>=0.27"]
 c2pa = ["c2pa-python>=0.32", "cryptography>=42"]
 dev = [
+    "consentvid[r2,ipfs,c2pa]",
     "mlcroissant>=1.0",
-    "boto3>=1.34",
-    "httpx>=0.27",
-    "c2pa-python>=0.32",
-    "cryptography>=42",
+    "pytest>=8",
+    "ruff>=0.6",
 ]
 
 [project.scripts]
 consentvid = "consentvid.cli:main"
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.dynamic]
+version = { attr = "consentvid.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+consentvid = ["schemas/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning:rdflib.*"]
+markers = ["network: talks to the live ATproto network (deselect with -m 'not network')"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501", "B008"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["consentvid", "conftest"]

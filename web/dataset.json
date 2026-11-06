@@ -6,6 +6,7 @@
     "column": "cr:column",
     "conformsTo": "dct:conformsTo",
     "cr": "http://mlcommons.org/croissant/",
+    "cv": "https://consentvid.org/ns#",
     "rai": "http://mlcommons.org/croissant/RAI/",
     "data": {
       "@id": "cr:data",
@@ -16,10 +17,6 @@
       "@type": "@vocab"
     },
     "dct": "http://purl.org/dc/terms/",
-    "equivalentProperty": {
-      "@id": "sc:equivalentProperty",
-      "@type": "@vocab"
-    },
     "examples": {
       "@id": "cr:examples",
       "@type": "@json"
@@ -42,7 +39,6 @@
     "regex": "cr:regex",
     "repeated": "cr:repeated",
     "replace": "cr:replace",
-    "samplingRate": "cr:samplingRate",
     "sc": "https://schema.org/",
     "separator": "cr:separator",
     "source": "cr:source",
@@ -50,32 +46,39 @@
     "transform": "cr:transform"
   },
   "@type": "sc:Dataset",
-  "name": "consentvid-ekazakos-bsky-social-2026-07-05",
-  "description": "Consent-first video dataset registered by ekazakos.bsky.social via ConsentVid. Each clip carries a cryptographically signed ATproto consent receipt declaring permitted purposes, model classes, modalities, and revocation status.",
+  "name": "consentvid-ekazakos-bsky-social-2026-11-01",
+  "description": "Consent-first video dataset of 1 clip(s) from 1 contributor(s), built with ConsentVid 0.1.0. Every clip carries a signed ATproto consent receipt stating the permitted purposes, model classes and modalities.",
   "conformsTo": "http://mlcommons.org/croissant/1.0",
-  "version": "0.1.0",
-  "datePublished": "2026-07-05",
-  "license": "https://creativecommons.org/licenses/by/4.0/",
-  "citeAs": "ekazakos.bsky.social (2026-07-05). consentvid-ekazakos-bsky-social-2026-07-05. ConsentVid dataset. https://bsky.app/profile/ekazakos.bsky.social",
-  "url": "https://bsky.app/profile/ekazakos.bsky.social",
-  "creator": {
-    "@type": "sc:Person",
-    "name": "ekazakos.bsky.social",
-    "identifier": "did:plc:u73ld57pmwsta45y45uitdfi"
-  },
+  "version": "1.0.0",
+  "datePublished": "2026-11-01",
+  "isLiveDataset": true,
+  "license": "https://consentvid.org/license.html",
+  "url": "https://bsky.app/profile/did:plc:u73ld57pmwsta45y45uitdfi",
+  "citeAs": "consentvid-ekazakos-bsky-social-2026-11-01 (2026-11-01). ConsentVid dataset. https://bsky.app/profile/did:plc:u73ld57pmwsta45y45uitdfi",
+  "creator": [
+    {
+      "@type": "sc:Person",
+      "name": "ekazakos.bsky.social",
+      "identifier": "did:plc:u73ld57pmwsta45y45uitdfi"
+    }
+  ],
   "distribution": [
     {
       "@type": "cr:FileObject",
-      "@id": "video-3mkmcxcautu2j",
+      "@id": "did:plc:u73ld57pmwsta45y45uitdfi/3mkmcxcautu2j",
       "name": "R2 upload test",
       "description": "",
       "contentUrl": "https://pub-169a4ec214a3496f80f351fcafff1fff.r2.dev/videos/sha256-29506f94b2eafd91acfa4ee6ccaa44ef39b8671e0220545b9c1c8841e1e3e360",
-      "encodingFormat": "video/*",
+      "encodingFormat": "application/octet-stream",
       "sha256": "29506f94b2eafd91acfa4ee6ccaa44ef39b8671e0220545b9c1c8841e1e3e360",
-      "cr:atUri": "at://did:plc:u73ld57pmwsta45y45uitdfi/org.consentvid.video/3mkmcxcautu2j",
-      "cr:storageKind": "r2",
-      "cr:consentReceipt": {
-        "atUri": "at://did:plc:u73ld57pmwsta45y45uitdfi/org.consentvid.consent/3mkmdkmkwqc2k",
+      "cv:atUri": "at://did:plc:u73ld57pmwsta45y45uitdfi/org.consentvid.video/3mkmcxcautu2j",
+      "cv:videoCid": "bafyreicpzvyrtrj66bpoglqdw5hk7443ibhqnbmufbsn76isptr6ptxghi",
+      "cv:storageKind": "r2",
+      "cv:contributor": "did:plc:u73ld57pmwsta45y45uitdfi",
+      "cv:consentReceipt": {
+        "atUri": "at://did:plc:u73ld57pmwsta45y45uitdfi/org.consentvid.consent/3mqz72t5bhm2a",
+        "cid": "bafyreie7sjgnuat5jzpmmnv6wr6hiyvpa4upftobv2rllnci5pleenf2xq",
+        "videoCid": null,
         "purposes": [
           "training",
           "evaluation"
@@ -90,52 +93,25 @@
         ],
         "compensation": "creditOnly",
         "revocable": true,
+        "authorshipAttested": true,
+        "rightsBasis": "ownRecording",
+        "captureProvenance": "selfAttested",
         "expiresAt": null,
-        "createdAt": "2026-04-29T05:11:25.638812Z"
-      }
-    },
-    {
-      "@type": "cr:FileObject",
-      "@id": "video-3mkm6izdo6u2o",
-      "name": "Grove qual video",
-      "description": "Test clip for ConsentVid AppView demo",
-      "contentUrl": "/Users/ekazakos/Desktop/grove_project/qual_video_iccv.mov",
-      "encodingFormat": "video/*",
-      "sha256": "29506f94b2eafd91acfa4ee6ccaa44ef39b8671e0220545b9c1c8841e1e3e360",
-      "cr:atUri": "at://did:plc:u73ld57pmwsta45y45uitdfi/org.consentvid.video/3mkm6izdo6u2o",
-      "cr:storageKind": "local",
-      "cr:consentReceipt": {
-        "atUri": "at://did:plc:u73ld57pmwsta45y45uitdfi/org.consentvid.consent/3mkm6zmigrx2v",
-        "purposes": [
-          "training",
-          "evaluation"
-        ],
-        "modelClasses": [
-          "academic",
-          "openWeights"
-        ],
-        "modalities": [
-          "video",
-          "audio"
-        ],
-        "compensation": "creditOnly",
-        "revocable": true,
-        "expiresAt": null,
-        "createdAt": "2026-04-29T03:50:20.121476Z"
+        "createdAt": "2026-07-19T16:26:47.042511Z"
       }
     }
   ],
   "recordSet": [],
-  "rai:dataCollection": "Videos contributed by ATproto users via ConsentVid. Each contribution writes a cryptographically signed org.consentvid.video record to the contributor's repo, plus a org.consentvid.consent receipt declaring permitted uses.",
+  "rai:dataCollection": "Videos contributed by their authors via ConsentVid. Each contributor writes an org.consentvid.video record and an org.consentvid.consent receipt to their own ATproto repository, signed by their repository key, including an attestation that they recorded the video or otherwise hold the right to consent.",
   "rai:dataCollectionType": [
     "Crowdsourced"
   ],
-  "rai:personalSensitiveInformation": "Modalities present: audio, video. Per-clip declarations live in each FileObject's cr:consentReceipt.",
-  "rai:dataReleaseMaintenancePlan": "Revocations are published as deletions on the ATproto firehose. Dataset consumers MUST re-sync consent records before each training run and drop any revoked clips.",
+  "rai:personalSensitiveInformation": "Modalities consented: audio, video. Clips may show faces and voices; contributors consented per clip. Identifying container metadata (location, device) is stripped at upload by default.",
+  "rai:dataReleaseMaintenancePlan": "Consent can be withdrawn at any time by deleting the receipt. Consumers MUST run `consentvid resync <manifest>` before each use; it cryptographically verifies every receipt against the contributor's repository and drops revoked, expired or modified clips.",
   "rai:dataUseCases": [
-    "Permitted purposes (union): evaluation, training",
-    "Permitted model classes (union): academic, openWeights",
-    "Per-clip consent is authoritative; the union here is informational only."
+    "Purposes granted by at least one clip: evaluation, training",
+    "Model classes granted by at least one clip: academic, openWeights",
+    "Terms are per clip and authoritative in each cv:consentReceipt; filter on them."
   ],
-  "rai:dataLimitations": "No clips have expiry dates. All clips are revocable. See per-FileObject cr:consentReceipt for authoritative terms."
+  "rai:dataLimitations": "Use is governed by each clip's consent receipt, not by a blanket licence. Authorship is self-attested by contributors unless captureProvenance is 'attested'."
 }
