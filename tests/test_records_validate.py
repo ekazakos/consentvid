@@ -58,6 +58,10 @@ def test_valid_records():
         ({"videoUri": "at://alice.test/org.consentvid.video/x"}, "DID"),
         ({"modalities": "video"}, "expected array"),
         ({"$type": "app.bsky.feed.post"}, "$type"),
+        ({"peoplePresent": None}, "null"),
+        ({"peoplePresent": "someone"}, "peoplePresent"),
+        ({"adultAttested": False}, "adultAttested"),
+        ({"peoplePresent": "noIdentifiablePeople", "modalities": ["video", "face"]}, "contradict"),
     ],
 )
 def test_invalid_consents(change, needle):
@@ -95,3 +99,18 @@ def test_write_policy_blocks_local_paths():
     assert validate_record(V, rec) == []  # other clients' records aren't rejected...
     assert write_policy_errors(V, rec)  # ...but our CLI never publishes a path
     assert not write_policy_errors(V, video_record(storageRef={"kind": "local", "value": "clip.mov"}))
+
+
+def test_consent_without_new_attestations_is_invalid():
+    rec = consent_record()
+    del rec["peoplePresent"], rec["adultAttested"]
+    errors = validate_record(C, rec)
+    assert any("peoplePresent" in e for e in errors) and any("adultAttested" in e for e in errors)
+
+
+def test_deprecated_values_still_valid_but_not_offered():
+    from consentvid.vocab import OFFERED_MODEL_CLASSES, OFFERED_PURPOSES
+
+    assert validate_record(C, consent_record(purposes=["researchOnly"], modelClasses=["foundationModel"])) == []
+    assert "researchOnly" not in OFFERED_PURPOSES and "foundationModel" not in OFFERED_MODEL_CLASSES
+    assert validate_record(C, consent_record(peoplePresent="noIdentifiablePeople", modalities=["video"])) == []

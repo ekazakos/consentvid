@@ -276,9 +276,10 @@ def check_all(items: list[Item], *, workers: int = 8, list_consents=_list_consen
         return list(pool.map(safe, items))
 
 
-def filter_manifest(manifest: dict, results: list[Result], now_iso: str, *, strict: bool = False) -> dict:
+def filter_manifest(manifest: dict, results: list[Result], now_iso: str, *, strict: bool = True) -> dict:
     """Copy of the manifest without dropped clips; notes the re-sync in the
-    maintenance plan. ``strict`` also drops clips whose status is unknown."""
+    maintenance plan. ``strict`` (default) also drops clips whose status is
+    unknown: unverifiable consent is not consent."""
     drop_statuses = DROP_STATUSES + ((UNKNOWN,) if strict else ())
     drop = {r.id for r in results if r.status in drop_statuses}
     kept = [fo for fo in manifest.get("distribution", []) or [] if fo.get("@id") not in drop]

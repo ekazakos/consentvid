@@ -24,13 +24,26 @@
 
   <h2>What a receipt grants</h2>
   <ul>
-    <li><strong>purposes</strong>: e.g. training, evaluation, benchmarking, researchOnly.</li>
-    <li><strong>modelClasses</strong>: who may use it, e.g. academic, openWeights, commercial, foundationModel.</li>
+    <li><strong>purposes</strong>: what it may be used for, e.g. training, evaluation, benchmarking.
+      (<code>researchOnly</code> is deprecated; older receipts that use it keep their literal meaning.)</li>
+    <li><strong>modelClasses</strong>: who may use it, e.g. academic, openWeights, commercial.
+      (<code>foundationModel</code> is deprecated; older receipts that use it keep their literal meaning.)</li>
     <li><strong>modalities</strong>: which signals, e.g. video, audio, transcript, face, voice.</li>
     <li><strong>expiresAt</strong>: optional end date of the permission.</li>
   </ul>
   <p>A use is permitted only if the receipt lists <em>every</em> applicable purpose, model class and
   modality. Anything not listed is not granted.</p>
+
+  <p><strong>compensation</strong> records what the contributor said they expect. It is a
+  declaration, not a payment arrangement: ConsentVid neither brokers nor enforces payment.</p>
+
+  <h2>People in the video and age</h2>
+  <p>Every receipt states who identifiably appears (<code>peoplePresent</code>: only the
+  contributor, everyone shown having agreed, or no identifiable people) and that the contributor is
+  an adult able to consent (<code>adultAttested</code>). These are self-declared under the
+  contributor's key. A receipt without them is invalid. If you find a clip that contradicts its
+  declaration, for example identifiable bystanders in a clip marked <code>onlyMe</code>, stop using
+  it and report it.</p>
 
   <h2>Withdrawal</h2>
   <p>Contributors can withdraw consent at any time by deleting the receipt (consent to processing
@@ -39,7 +52,14 @@
   <p><code>consentvid resync manifest.json --write manifest.clean.json</code></p>
   <p>and use only the clips that remain. <code>resync</code> verifies each receipt against the
   contributor's signed repository; withdrawn, expired or modified clips must be deleted from your
-  copies.</p>
+  copies. Clips that <code>resync</code> could not check are dropped too.</p>
+
+  <h2>Models trained before a withdrawal</h2>
+  <p>Withdrawal does not affect the lawfulness of use before it (GDPR Art. 7(3)). A model trained in
+  good faith on clips that were valid at a <code>resync</code> made before training stays
+  legitimate and need not be destroyed. From the moment of withdrawal, the clip may not be used
+  again: not for new training, retraining, fine-tuning, continued training from a checkpoint, or
+  new evaluations. Delete it from your copies.</p>
 
   <h2>Attribution and authorship</h2>
   <p>Cite the dataset as given in the manifest's <code>citeAs</code>. Contributors attest, under their

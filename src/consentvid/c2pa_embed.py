@@ -214,6 +214,8 @@ def build_manifest_definition(
         "authorshipAttested": consent.get("authorshipAttested", False),
         "rightsBasis": consent.get("rightsBasis"),
         "captureProvenance": consent.get("captureProvenance", "unverified"),
+        "peoplePresent": consent.get("peoplePresent"),
+        "adultAttested": consent.get("adultAttested", False),
         "expiresAt": consent.get("expiresAt"),
         "createdAt": consent.get("createdAt"),
         "revocationNote": (

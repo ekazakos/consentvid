@@ -97,8 +97,9 @@ def test_filter_manifest_and_legacy_keys():
     items = rs.items_from_manifest(manifest)
     assert [i.consent_uri for i in items] == [CURI, CURI]
     results = [rs.Result("a", "a", CURI, rs.UNKNOWN), rs.Result("b", "b", CURI, rs.MODIFIED)]
-    assert [f["@id"] for f in rs.filter_manifest(manifest, results, "now")["distribution"]] == ["a"]
-    assert rs.filter_manifest(manifest, results, "now", strict=True)["distribution"] == []
+    # strict is the default: unverifiable consent is dropped; lenient keeps it
+    assert rs.filter_manifest(manifest, results, "now")["distribution"] == []
+    assert [f["@id"] for f in rs.filter_manifest(manifest, results, "now", strict=False)["distribution"]] == ["a"]
 
 
 @pytest.mark.parametrize(

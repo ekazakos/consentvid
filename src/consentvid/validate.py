@@ -25,6 +25,7 @@ import re
 
 from consentvid.lexicons import load_lexicon
 from consentvid.records import CONSENT_NSID, VIDEO_NSID, is_did, parse_at_uri, parse_dt
+from consentvid.vocab import IDENTITY_MODALITIES, PEOPLE_PRESENT
 
 _SHA256_RE = re.compile(r"^sha256-[0-9a-f]{64}$")
 _LANG_RE = re.compile(r"^(i|[a-zA-Z]{2,3})(-[a-zA-Z0-9]{1,8})*$")
@@ -62,6 +63,23 @@ def _consent_rules(record: dict) -> list[str]:
     # (GDPR Art. 7(3)); a "non-revocable" receipt is not valid consent.
     if record.get("revocable") is not True:
         errors.append("revocable must be true: consent must always be withdrawable")
+    # Bystanders: the authorship attestation covers rights to the recording,
+    # not the people in it. Every consent must say who appears.
+    people = record.get("peoplePresent")
+    if people not in PEOPLE_PRESENT:
+        errors.append(
+            "peoplePresent must be one of " + ", ".join(PEOPLE_PRESENT)
+            + ": consent must state who identifiably appears in the video"
+        )
+    elif people == "noIdentifiablePeople":
+        bad = IDENTITY_MODALITIES & set(record.get("modalities") or [])
+        if bad:
+            errors.append(
+                f"modalities {sorted(bad)} contradict peoplePresent=noIdentifiablePeople"
+            )
+    # Minors can't give this consent; self-declared, like authorship.
+    if record.get("adultAttested") is not True:
+        errors.append("adultAttested must be true: the contributor must affirm they are an adult able to consent")
     for field in ("modalities", "purposes", "modelClasses"):
         vals = record.get(field)
         if isinstance(vals, list) and len(set(vals)) != len(vals):

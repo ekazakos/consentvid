@@ -63,6 +63,8 @@ def consent_record(did=ALICE, rkey="v1", **kw):
         "authorshipAttested": True,
         "rightsBasis": "ownRecording",
         "captureProvenance": "selfAttested",
+        "peoplePresent": "onlyMe",
+        "adultAttested": True,
         "createdAt": "2026-01-01T00:00:00.000Z",
     }
     rec.update(kw)

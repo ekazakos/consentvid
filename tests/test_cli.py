@@ -13,9 +13,11 @@ from consentvid.errors import ConsentVidError
 
 ROOT = Path(__file__).resolve().parents[1]
 TERMS = dict(
-    modalities=(),
+    modalities=("video", "audio"),
     purposes=("training",),
-    model_classes=(),
+    model_classes=("academic",),
+    people="onlyMe",
+    adult=True,
     expires_at=None,
     compensation="none",
     attest=True,
@@ -42,6 +44,37 @@ def test_consent_without_attestation_refused_before_login():
     ):
         r = run(*args)
         assert r.exit_code != 0 and "attest-authorship" in r.output
+
+
+def test_consent_terms_required_before_login():
+    """Nothing is granted by default: missing terms are refused (non-interactive)."""
+    attested = ["--attest-authorship", "--attest-adult", "--people", "onlyMe"]
+    for args in (
+        ["attach-consent", f"at://{ALICE}/org.consentvid.video/x", *attested],
+        ["contribute", __file__, "--title", "t", *attested],
+    ):
+        r = run(*args)
+        assert r.exit_code == 2 and "--modality" in r.output and "--purpose" in r.output, r.output
+    terms = ["--modality", "video", "--purpose", "training", "--model-class", "academic"]
+    r = run("attach-consent", f"at://{ALICE}/org.consentvid.video/x", "--attest-authorship", *terms, "--people", "onlyMe")
+    assert r.exit_code == 2 and "attest-adult" in r.output
+    r = run("attach-consent", f"at://{ALICE}/org.consentvid.video/x", "--attest-authorship", "--attest-adult", *terms)
+    assert r.exit_code == 2 and "--people" in r.output
+    r = run(
+        "attach-consent", f"at://{ALICE}/org.consentvid.video/x", *attested[:2],
+        "--people", "noIdentifiablePeople", *terms, "--modality", "face",
+    )
+    assert r.exit_code == 2 and "contradicts" in r.output
+
+
+def test_deprecated_values_not_offered():
+    r = run("attach-consent", f"at://{ALICE}/org.consentvid.video/x", "--purpose", "researchOnly")
+    assert r.exit_code == 2 and "researchOnly" in r.output and "Invalid value" in r.output
+
+
+def test_resync_is_strict_by_default():
+    opt = next(p for p in cli.resync.params if p.name == "strict")
+    assert opt.default is True
 
 
 def test_not_logged_in_message():

@@ -112,6 +112,8 @@ def _file_object(clip: Clip) -> dict | None:
             "authorshipAttested": c.get("authorshipAttested"),
             "rightsBasis": c.get("rightsBasis"),
             "captureProvenance": c.get("captureProvenance", "unverified"),
+            "peoplePresent": c.get("peoplePresent"),
+            "adultAttested": c.get("adultAttested"),
             "expiresAt": c.get("expiresAt"),
             "createdAt": c.get("createdAt"),
         },

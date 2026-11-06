@@ -41,6 +41,9 @@ from consentvid.vocab import (
     COMPENSATION,
     MODALITIES,
     MODEL_CLASSES,
+    OFFERED_MODEL_CLASSES,
+    OFFERED_PURPOSES,
+    PEOPLE_PRESENT,
     PURPOSES,
     RIGHTS_BASIS,
     STORAGE_KINDS,
@@ -204,6 +207,65 @@ def _require_attestation(attest: bool) -> None:
         )
 
 
+_TERM_PROMPTS = (
+    ("modalities", "--modality", MODALITIES, "What may be used"),
+    ("purposes", "--purpose", OFFERED_PURPOSES, "What it may be used for"),
+    ("model_classes", "--model-class", OFFERED_MODEL_CLASSES, "Who may use it"),
+)
+
+
+def _interactive() -> bool:
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _prompt_multi(label: str, choices) -> tuple:
+    choice_str = ", ".join(choices)
+    while True:
+        raw = click.prompt(f"{label} (comma-separated; options: {choice_str})", default="", show_default=False)
+        vals = tuple(dict.fromkeys(v.strip() for v in raw.split(",") if v.strip()))
+        bad = [v for v in vals if v not in choices]
+        if vals and not bad:
+            return vals
+        click.echo(f"  pick at least one of: {choice_str}" + (f" (unknown: {', '.join(bad)})" if bad else ""))
+
+
+def _require_terms(terms: dict) -> None:
+    """Consent must be specific (GDPR Art. 4(11)): nothing is granted by
+    default. Missing terms are asked for interactively, else refused. Runs
+    before any login or upload."""
+    _require_attestation(terms["attest"])
+    missing = [t for t in _TERM_PROMPTS if not terms.get(t[0])]
+    if not terms.get("people"):
+        missing.append(("people", "--people", PEOPLE_PRESENT, None))
+    if missing and not _interactive():
+        raise click.UsageError(
+            "consent terms must be stated explicitly; nothing is granted by default. Missing: "
+            + ", ".join(flag for _, flag, _, _ in missing)
+        )
+    for key, _flag, choices, label in missing:
+        if key == "people":
+            click.echo(
+                "Who identifiably appears or is heard in the video?\n"
+                "  onlyMe               only you\n"
+                "  allConsented         others too, and every one of them agreed to this use\n"
+                "  noIdentifiablePeople no identifiable face or voice (e.g. hands-only footage)"
+            )
+            terms["people"] = click.prompt("peoplePresent", type=click.Choice(PEOPLE_PRESENT))
+        else:
+            terms[key] = _prompt_multi(label, choices)
+    if not terms.get("adult"):
+        if not _interactive():
+            raise click.UsageError(
+                "consent requires --attest-adult: you affirm (signed by your key) that you are "
+                "18 or older (or the age of majority where you live) and able to consent."
+            )
+        if not click.confirm("I am 18 or older (or the age of majority where I live) and able to consent"):
+            raise click.UsageError("only adults able to consent may contribute")
+        terms["adult"] = True
+    if terms["people"] == "noIdentifiablePeople" and {"face", "voice"} & set(terms["modalities"]):
+        raise click.UsageError("--modality face/voice contradicts --people noIdentifiablePeople")
+
+
 def _default_storage() -> str:
     from consentvid import storage
 
@@ -266,21 +328,34 @@ def _consent_options(f):
                 "modalities",
                 multiple=True,
                 type=click.Choice(MODALITIES),
-                help="What may be used. Repeatable. Default: video, audio.",
+                help="What may be used. Repeatable. REQUIRED (asked if interactive).",
             ),
             click.option(
                 "--purpose",
                 "purposes",
                 multiple=True,
-                type=click.Choice(PURPOSES),
-                help="Permitted purpose. Repeatable. Default: training.",
+                type=click.Choice(OFFERED_PURPOSES),
+                help="What it may be used for. Repeatable. REQUIRED (asked if interactive).",
             ),
             click.option(
                 "--model-class",
                 "model_classes",
                 multiple=True,
-                type=click.Choice(MODEL_CLASSES),
-                help="Who may use it. Repeatable. Default: academic.",
+                type=click.Choice(OFFERED_MODEL_CLASSES),
+                help="Who may use it. Repeatable. REQUIRED (asked if interactive).",
+            ),
+            click.option(
+                "--people",
+                type=click.Choice(PEOPLE_PRESENT),
+                default=None,
+                help="REQUIRED. Who identifiably appears: onlyMe, allConsented (everyone shown "
+                "agreed to this use), or noIdentifiablePeople (excludes face/voice).",
+            ),
+            click.option(
+                "--attest-adult",
+                "adult",
+                is_flag=True,
+                help="REQUIRED. You affirm, signed by your key, that you are an adult able to consent.",
             ),
             click.option(
                 "--expires-at",
@@ -288,7 +363,11 @@ def _consent_options(f):
                 help="Optional expiry: ISO datetime, date, or duration (90d, 12w, 2y).",
             ),
             click.option(
-                "--compensation", type=click.Choice(COMPENSATION), default="none", show_default=True
+                "--compensation",
+                type=click.Choice(COMPENSATION),
+                default="none",
+                show_default=True,
+                help="What you expect in return. A declaration only: ConsentVid does not pay or enforce it.",
             ),
             click.option(
                 "--rights-basis",
@@ -480,12 +559,16 @@ def _attach(
     expires_at,
     compensation,
     attest,
+    people,
+    adult,
     rights_basis,
     capture_provenance,
     replace,
     validate,
 ):
     _require_attestation(attest)
+    if not (modalities and purposes and model_classes and people and adult):
+        raise ConsentVidError("consent terms, --people and --attest-adult are required")
     did = client.me.did
     try:
         vat = parse_at_uri(video_uri, VIDEO_NSID)
@@ -516,14 +599,16 @@ def _attach(
         "$type": CONSENT_NSID,
         "videoUri": str(vat),
         "videoCid": str(video.cid),
-        "modalities": list(dict.fromkeys(modalities or ("video", "audio"))),
-        "purposes": list(dict.fromkeys(purposes or ("training",))),
-        "modelClasses": list(dict.fromkeys(model_classes or ("academic",))),
+        "modalities": list(dict.fromkeys(modalities)),
+        "purposes": list(dict.fromkeys(purposes)),
+        "modelClasses": list(dict.fromkeys(model_classes)),
         "compensation": compensation,
         "revocable": True,
         "authorshipAttested": True,
         "rightsBasis": rights_basis,
         "captureProvenance": capture_provenance,
+        "peoplePresent": people,
+        "adultAttested": True,
         "createdAt": now_iso(),
     }
     if expires_at:
@@ -607,7 +692,7 @@ def register_video(video_path, validate, **video_opts):
     uri, cid, record = _register(client, video_path, validate=validate, **video_opts)
     click.secho("Created video record:", fg="green")
     click.echo(f"  uri:  {uri}\n  cid:  {cid}\n  hash: {record['contentHash']}")
-    click.echo(f"Next: consentvid attach-consent {uri} --attest-authorship ...")
+    click.echo(f"Next: consentvid attach-consent {uri} --attest-authorship --attest-adult ...")
 
 
 @main.command("attach-consent")
@@ -617,7 +702,7 @@ def register_video(video_path, validate, **video_opts):
 @_validate_option
 def attach_consent(video_uri, replace, validate, **terms):
     """Attach a signed consent receipt to one of your videos (one per video)."""
-    _require_attestation(terms["attest"])
+    _require_terms(terms)
     client = get_client()
     uri, cid, record, replaced = _attach(client, video_uri, replace=replace, validate=validate, **terms)
     _print_consent(uri, cid, record, replaced)
@@ -634,10 +719,16 @@ def contribute(video_path, validate, **opts):
     \b
     Example:
       consentvid contribute clip.mp4 --title "Making pasta" --tag cooking \\
-          --attest-authorship --purpose training --model-class academic
+          --attest-authorship --attest-adult --people onlyMe \\
+          --modality video --modality audio --purpose training --model-class academic
+
+    Any term you leave out is asked for when run interactively; nothing is
+    granted by default.
     """
     consent_keys = (
         "attest",
+        "people",
+        "adult",
         "modalities",
         "purposes",
         "model_classes",
@@ -647,7 +738,7 @@ def contribute(video_path, validate, **opts):
         "capture_provenance",
     )
     terms = {k: opts.pop(k) for k in consent_keys}
-    _require_attestation(terms["attest"])  # fail before uploading anything
+    _require_terms(terms)  # fail before uploading anything
     _parse_expiry(terms["expires_at"])
     client = get_client()
     uri, cid, record = _register(client, video_path, validate=validate, **opts)
@@ -942,7 +1033,13 @@ _MARK = {
     type=click.Choice(CAPTURE_PROVENANCE),
     help="Also drop clips whose capture provenance is below this tier.",
 )
-@click.option("--strict", is_flag=True, help="Also drop clips that couldn't be checked.")
+@click.option(
+    "--strict/--lenient",
+    default=True,
+    show_default=True,
+    help="--strict (default) drops clips that couldn't be checked (e.g. network errors); "
+    "--lenient keeps them. A consent-first dataset should not train on unverified consent.",
+)
 @click.option("--check", is_flag=True, help="Exit with status 1 if any clip must be dropped.")
 @click.option("--json", "as_json", is_flag=True)
 @click.option("--workers", default=8, show_default=True, help="Parallel checks.")
@@ -991,7 +1088,7 @@ def resync(input_path, write_path, min_provenance, strict, check, as_json, worke
         click.echo("\n" + ", ".join(f"{s}: {n}" for s, n in counts.items() if n))
         click.echo(f"{n_drop} of {len(results)} clip(s) must be dropped before use.")
         if counts[rs.UNKNOWN] and not strict:
-            _warn("some clips couldn't be checked (network); they are kept. Re-run, or use --strict.")
+            _warn("some clips couldn't be checked (network); --lenient keeps them. Re-run to check again.")
     if write_path:
         if manifest is None:
             raise click.UsageError("--write needs a manifest as input")

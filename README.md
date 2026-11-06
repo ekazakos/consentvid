@@ -38,7 +38,7 @@ consentvid login        # handle + app password (bsky.app/settings/app-passwords
 
 # Register a clip and consent in one step:
 consentvid contribute clip.mp4 --title "Making pasta" --tag cooking --language en \
-    --attest-authorship \
+    --attest-authorship --attest-adult --people onlyMe \
     --purpose training --purpose evaluation \
     --model-class academic --model-class openWeights \
     --modality video --modality audio \
@@ -61,10 +61,33 @@ What `contribute` does:
 4. Writes an `org.consentvid.video` record, then an `org.consentvid.consent`
    receipt **pinned to that exact video record version** (`videoCid`).
 
-`--attest-authorship` is required. You affirm, under your signing key, that you
-recorded the video (or hold the rights, `--rights-basis licensed`). Consenting
-on behalf of someone else's video is unlawful, and every reader rejects a
-consent that points at a video in another account's repo.
+Nothing is granted by default. `--modality`, `--purpose` and `--model-class`
+must each be given at least once. Run interactively, `contribute` and
+`attach-consent` ask for any you left out, with nothing pre-selected.
+Without a terminal, they refuse to run. Three attestations are also required,
+each signed by your key and enforced by every reader:
+
+- `--attest-authorship`: you recorded the video, or hold the rights to it
+  (`--rights-basis licensed`). Consenting on behalf of someone else's video
+  is unlawful, and every reader rejects a consent that points at a video in
+  another account's repo.
+- `--people onlyMe | allConsented | noIdentifiablePeople`: who identifiably
+  appears or is heard in the video. `allConsented` means every identifiable
+  person agreed to this use. `noIdentifiablePeople` (for example hands-only
+  footage) can't be combined with the `face` or `voice` modalities. This covers
+  bystanders, which the authorship attestation does not.
+- `--attest-adult`: you are 18 or older (or the age of majority where you
+  live) and able to consent.
+
+These are self-declared. They deter misuse, make it detectable and put
+liability on the contributor; they are not verified.
+
+**Vocabulary.** `--purpose` says what the data may be used *for* (training,
+evaluation, benchmarking). `--model-class` says *who* may use it (academic,
+openWeights, commercial). `researchOnly` and `foundationModel` are deprecated,
+because they mixed the two questions: existing records using them stay valid,
+but the CLI no longer offers them. `--compensation` records what you expect in
+return. ConsentVid doesn't pay or enforce it.
 
 Consent is always revocable: consent to process personal data must be
 withdrawable (GDPR Art. 7(3)). Each video has one consent receipt, and
@@ -103,7 +126,7 @@ presence or absence, so neither the PDS nor any relay is trusted. Outcomes:
 | `invalid` | fails validation or proof verification, or points at someone else's video | yes |
 | `unattested` | below `--min-provenance` | yes |
 | `unavailable` | account deactivated, suspended or taken down | yes |
-| `unknown` | network error | only with `--strict` |
+| `unknown` | network error | yes (default `--strict`); `--lenient` keeps it |
 
 Manifests are Croissant 1.0 + RAI with `isLiveDataset: true`. There is no
 blanket licence (see [consentvid.org/license.html](https://consentvid.org/license.html)):
@@ -147,6 +170,11 @@ CIDs), not by its hash.
   verify with `resync` before use.
 - **Rollback:** a malicious PDS could serve an *older* signed commit to hide a
   deletion. Detecting that needs an independent witness, such as a relay.
+- **Models trained before a revocation** stay legitimate, provided they were
+  trained in good faith on a manifest that `resync` showed as valid at the time
+  (GDPR Art. 7(3): withdrawal doesn't affect earlier lawful processing).
+  Revocation stops all *new* use from that point, including retraining,
+  fine-tuning and new evaluations. Re-sync before every run.
 - **Copies:** revocation can't reach copies that were already downloaded. The
   terms of use oblige consumers to resync and delete.
 - **Jetstream** keeps roughly a day of replay. After a longer AppView outage,

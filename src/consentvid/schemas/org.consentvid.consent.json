@@ -54,7 +54,8 @@
                 "benchmarking",
                 "researchOnly"
               ]
-            }
+            },
+            "description": "What the data may be used FOR. 'researchOnly' is DEPRECATED: it overlaps the 'academic' model class (who may use it); new clients don't offer it, but it remains valid in existing records."
           },
           "modelClasses": {
             "type": "array",
@@ -67,7 +68,8 @@
                 "commercial",
                 "foundationModel"
               ]
-            }
+            },
+            "description": "WHO may use the data, and under what release model. 'foundationModel' is DEPRECATED: it describes a kind of model, not a user; new clients don't offer it, but it remains valid in existing records."
           },
           "expiresAt": {
             "type": "string",
@@ -80,7 +82,8 @@
               "none",
               "creditOnly",
               "monetary"
-            ]
+            ],
+            "description": "What compensation the contributor declares they expect. Informational only: ConsentVid does not broker or enforce payment. Researchers may filter on it."
           },
           "revocable": {
             "type": "boolean",
@@ -107,6 +110,19 @@
               "unverified"
             ],
             "description": "Strength of the capture-provenance guarantee. 'attested' = capture-time cryptographic provenance (e.g. C2PA/CAWG) binds the recording to the contributor's DID; 'selfAttested' = signed authorship attestation only; 'unverified' = neither."
+          },
+          "peoplePresent": {
+            "type": "string",
+            "knownValues": [
+              "onlyMe",
+              "allConsented",
+              "noIdentifiablePeople"
+            ],
+            "description": "Who identifiably appears or is heard in the video: 'onlyMe' = only the contributor; 'allConsented' = every identifiable person gave the contributor permission for this use; 'noIdentifiablePeople' = no identifiable face or voice (e.g. hands-only footage), which is incompatible with the 'face' and 'voice' modalities. Optional in the schema for evolution compatibility, but ConsentVid treats a consent without one of these values as invalid."
+          },
+          "adultAttested": {
+            "type": "boolean",
+            "description": "The contributor affirms, under their signing key, that they are an adult (18 or older, or the age of majority where they live, if higher) and legally capable of giving this consent. Self-declared, not verified. Optional in the schema for evolution compatibility, but ConsentVid treats a consent without adultAttested=true as invalid."
           },
           "createdAt": {
             "type": "string",
