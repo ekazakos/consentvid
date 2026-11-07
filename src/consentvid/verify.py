@@ -21,7 +21,9 @@ or compromised PDS can sign commits that re-add a deleted consent or forge a
 new one. Consumers should use manifests that pin the consent and video CIDs
 (the default export), which limits a forging PDS to replaying the exact
 records the manifest already references. A PDS can also serve a stale commit
-(a rollback), which would need a relay/witness to detect.
+(a rollback): resync compares the commit's rev with the newest rev a relay
+has seen (resync.STALE), and commits dated more than five minutes in the
+future are refused here, so a forged far-future rev can't outrank them.
 
 Robustness, as the sync spec asks:
 
@@ -55,7 +57,7 @@ from consentvid.identity import (
     status_of,
     with_retry,
 )
-from consentvid.records import AtUri, is_nsid, is_record_key, is_tid, parse_at_uri
+from consentvid.records import AtUri, decode_tid, is_nsid, is_record_key, is_tid, parse_at_uri
 
 _CID_PREFIX = b"\x01\x71\x12\x20"  # CIDv1, dag-cbor, sha2-256, 32-byte digest
 _REPO_STATUS_ERRORS = {
@@ -353,7 +355,22 @@ def _check_commit(commit, *, did: str, signing_key: str) -> str:
         raise VerificationError("commit has no data root")
     if not verify_signature(signing_key, libipld.encode_dag_cbor(unsigned), sig):
         raise SignatureMismatch("commit signature does not match the DID's signing key")
+    if rev_is_far_future(commit["rev"]):
+        # A rev is a TID (a timestamp): a signed one from the future would
+        # sort after every honest commit and defeat rollback detection.
+        raise VerificationError(f"commit rev {commit['rev']} is more than five minutes in the future")
     return commit["rev"]
+
+
+MAX_REV_SKEW_US = 5 * 60 * 1_000_000
+
+
+def rev_is_far_future(rev: str, now_us: int | None = None) -> bool:
+    """Is the TID ``rev``'s timestamp more than MAX_REV_SKEW_US ahead?"""
+    import time
+
+    now_us = time.time_ns() // 1000 if now_us is None else now_us
+    return (decode_tid(rev) >> 10) > now_us + MAX_REV_SKEW_US
 
 
 def _dict_getter(blocks: dict[bytes, bytes]) -> Callable[[bytes], bytes]:

@@ -104,11 +104,16 @@ What `contribute` does:
    validation never leaves orphaned bytes, and a failed record write deletes
    the upload. If your PDS rate-limits the write (HTTP 429), the uploaded
    bytes are kept and the error says when to re-run.
-4. Writes the `org.consentvid.video` record and its `org.consentvid.consent`
-   receipt in **one atomic commit** (`com.atproto.repo.applyWrites`): both
-   exist or neither does. The receipt is **pinned to that exact video record
-   version** (`videoCid`, computed locally exactly as the PDS does) and shares
-   the video's record key (see "one consent per video" below).
+4. Writes the `org.consentvid.videoV2` record and its
+   `org.consentvid.consentV2` receipt in **one atomic commit**
+   (`com.atproto.repo.applyWrites`): both exist or neither does. The receipt's
+   `subject` (a `com.atproto.repo.strongRef`) **pins that exact video record
+   version** (its CID, computed locally exactly as the PDS does), and it
+   shares the video's record key (see "one consent per video" below). The
+   video record carries the byte `size` and, with `--self-label`, your own
+   content labels (`porn`, `sexual`, `nudity`, `graphic-media`, Bluesky's
+   global self-label values): dataset tools leave labeled clips out unless
+   asked (`--include-labeled`).
 
 Nothing is granted by default. `--modality`, `--purpose` and `--model-class`
 must each be given at least once. Run interactively, `contribute` and
@@ -131,11 +136,34 @@ each signed by your key and enforced by every reader:
 These are self-declared. They deter misuse, make it detectable and put
 liability on the contributor; they are not verified.
 
+**Account signals.** Two things you publish elsewhere in your repo override a
+consent, and `contribute`/`attach-consent` refuse to write one they contradict
+(every reader enforces the same):
+
+- **Bots can't consent.** If your Bluesky profile (`app.bsky.actor.profile`)
+  carries the `bot` self-label (as the
+  [bot tutorial](https://atproto.com/guides/bot-tutorial) recommends for
+  automated accounts), the account is not a person who recorded a video.
+- **Your AI-usage preferences win.** If your
+  [`community.lexicon.preference.ai`](https://github.com/lexicon-community/lexicon)
+  record denies AI training, a consent that grants `training` is not honoured.
+  A preference scoped to a ConsentVid collection (`#collectionScope`) beats
+  your account-wide default (`self`, `#globalScope`), and among such overrides
+  a deny wins. Entity-scoped preferences name an AI consumer, which ConsentVid
+  can't know, so they aren't applied. Only `training` maps onto a ConsentVid
+  purpose.
+
+Both are read from your own PDS with proofs (signature + MST, including proof
+that a record is absent). If they can't be read, nothing is written.
+
 **Vocabulary.** `--purpose` says what the data may be used *for* (training,
 evaluation, benchmarking). `--model-class` says *who* may use it (academic,
 openWeights, commercial). `researchOnly` and `foundationModel` are deprecated,
-because they mixed the two questions: existing records using them stay valid,
-but the CLI no longer offers them. `--compensation` records what you expect in
+because they mixed the two questions: existing version-1 records using them
+stay valid, but the CLI no longer offers them and version 2 doesn't have them.
+The CLI and manifests spell values in lowerCamelCase (`openWeights`); version-2
+records store the kebab-case form the lexicon style guide asks for
+(`open-weights`), and filters accept either. `--compensation` records what you expect in
 return. ConsentVid doesn't pay or enforce it.
 
 Consent is always revocable: consent to process personal data must be
@@ -197,6 +225,10 @@ usually holds the signing key: see the trust model). Outcomes:
 | `unattested` | below `--min-provenance` | yes |
 | `unavailable` | account deactivated, suspended or taken down, on the PDS or at the relay (`getRepoStatus` from `$CONSENTVID_RELAY`, default relay1.us-east.bsky.network: a relay-level takedown counts even if the PDS still serves the records; `--no-relay-status` skips this for offline use). Also when the PDS can't be reached (5xx, network) and the relay reports the account deleted, taken down, suspended or deactivated (never `revoked`: only the PDS's signed answer proves a withdrawal) | yes |
 | `unbound` | a C2PA-stamped file: the consent stands, but nothing binds *this file's* bytes to it | yes |
+| `bot-account` | the contributor's profile carries the `bot` self-label | yes |
+| `conflicting-preference` | the consent grants `training`, but the same account's `community.lexicon.preference.ai` denies it | yes |
+| `labeled` | the contributor self-labeled the video `porn`, `sexual`, `nudity` or `graphic-media` (`--include-labeled` keeps it) | yes |
+| `stale` | the PDS served an older repo revision than the relay has seen (`com.atproto.sync.getLatestCommit`, asked *before* the PDS): a rolled-back repo could hide a withdrawal | yes |
 | `unknown` | network error (only transport errors and 5xx/429; a malformed or rejected answer, or a TLS failure, is `invalid`) | yes (default `--strict`); `--lenient` keeps it unverified, so only use `--lenient` on manifests you built yourself (a contributor's PDS can make its clips uncheckable) |
 
 The relay's `getRepoStatus` mixes two kinds of status. **Account statuses**
@@ -352,7 +384,13 @@ on the server.
   video CIDs (the default export); `resync` notes when a manifest doesn't, and
   pins limit a forging PDS to replaying exactly the records already referenced.
 - **Rollback:** a malicious PDS could serve an *older* signed commit to hide a
-  deletion. Detecting that needs an independent witness, such as a relay.
+  deletion. `resync` and `verify` ask the relay for the newest revision it
+  has seen (`com.atproto.sync.getLatestCommit`) *before* reading the PDS, and
+  report `stale` if the PDS's signed commit is older. If the relay can't
+  answer, the clip keeps its verdict with a note ("rollback not checked").
+  Commits dated more than five minutes in the future are refused, so a
+  forged far-future revision can't outrank honest ones. A PDS that rolls back
+  before the relay has seen the newer commit is not detected.
 - **Records are public.** Video and consent records are public ATproto
   records: relays, Jetstream and every indexer copy them as they are written.
   Deleting a record withdraws consent and well-behaved indexes drop it (the
@@ -385,8 +423,13 @@ on the server.
 - **Jetstream** keeps 36 h of replay; beyond that the indexer records a gap
   (shown by `appview stats` and `doctor`) and `appview backfill --all`
   repairs it. The indexer uses the Jetstream v2 endpoint
-  (`network.bsky.jetstream.subscribeEvents`) and asks only for its two
-  collections and the `commit`, `account` and `sync` kinds. It resumes by
+  (`network.bsky.jetstream.subscribeEvents`) and asks only for its
+  collections (both record versions, plus `community.lexicon.preference.ai`
+  and `app.bsky.actor.profile` for account signals) and the `commit`,
+  `account` and `sync` kinds. `CONSENTVID_JETSTREAM_URL` may list several
+  instances, comma-separated (default: the public v2 instances in us-east
+  and us-west); after repeated failed connections the indexer moves to the
+  next. It resumes by
   sequence number on the same instance (by time on another) and skips events
   it already applied (seq cursors are inclusive). If the seq is past
   retention (`CursorTooOld`) or unknown to the archive (`#info FutureCursor`),
@@ -414,6 +457,13 @@ on the server.
   after a `#sync`) and queued; the re-read lists it from its PDS but keeps it
   hidden, re-checking hourly, until the relay reports it active again (an
   `#account` event with `active: true` queues an immediate re-read).
+- **Account signals in the index** are read with proofs whenever a repo is
+  backfilled. Fail closed: a contributor whose signals were never checked is
+  left out of queries and queued for a re-read. Live, a profile or preference
+  record that sets the `bot` label or denies training hides the account at
+  once (unverified, but only ever in the restrictive direction); any change
+  queues a verified re-read. Self-labeled videos are left out unless
+  `--include-labeled`.
 - **Ordering:** `appview query` sorts by `min(createdAt, first time the index
   saw the record)`, as Bluesky does with untrusted `createdAt`, so a
   future-dated record can't push others past `--limit`.
@@ -441,10 +491,19 @@ on the server.
 
 ## Lexicons
 
-`org.consentvid.video` and `org.consentvid.consent` ship in
-`src/consentvid/schemas/` (mirrored in `web/lexicons/`, and a test keeps the two
-identical). They are published as `com.atproto.lexicon.schema` records and
-resolvable through `_lexicon.consentvid.org`:
+Two record versions ship in `src/consentvid/schemas/` (mirrored in
+`web/lexicons/`, and a test keeps the two identical):
+
+- `org.consentvid.videoV2` and `org.consentvid.consentV2`: what the CLI
+  writes (see [docs/lexicon-v2.md](docs/lexicon-v2.md) for what changed);
+- `org.consentvid.video` and `org.consentvid.consent`: version 1, frozen.
+  Every reader still accepts them.
+
+A consent only binds a video of its own version (a V2 consent's subject must
+be an `org.consentvid.videoV2` record), and `attach-consent` refuses a
+version-1 video: register it again. All four are published as
+`com.atproto.lexicon.schema` records and resolvable through
+`_lexicon.consentvid.org`:
 
 ```bash
 consentvid publish-lexicons             # after changing a schema (lexicon authority only)
@@ -481,7 +540,28 @@ change needs a new NSID. `publish-lexicons` enforces both halves of that:
   (`--skip-pds-validation` if yours rejects valid lexicons).
 
 The records' contract, beyond what the schema language can say, is in the
-lexicon descriptions, and every reader enforces it:
+lexicon descriptions, and every reader enforces it. For version 2:
+
+- **Record keys** are TIDs, and a consent's key MUST equal its video's (the
+  sidecar rule); consents under other keys are ignored.
+- `subject` is a `com.atproto.repo.strongRef`: `uri` is the DID-form
+  `at://<did>/org.consentvid.videoV2/<rkey>` in the same repo, `cid` that
+  record's CID (dag-cbor).
+- `authorshipAttested` and `adultAttested` are required and `const: true`;
+  `peoplePresent` is required and one of `only-me`, `all-consented`,
+  `no-identifiable-people`. There is no `revocable` field: every consent is
+  withdrawable.
+- `contentHash` is the bytes' CIDv1 with the raw codec and sha-256
+  (`bafkrei...`, what a PDS blob ref would carry); `storage` is an open union
+  (`#r2Ref`, `#ipfsRef`, `#peertubeRef`, `#urlRef`, `#localRef`), and a member
+  type a reader doesn't know makes the bytes unreachable for it; `langs` holds
+  up to three BCP-47 tags; titles, descriptions and tags are limited in
+  characters (grapheme clusters) as well as bytes, as Bluesky's posts are.
+- Vocabulary is kebab-case, holds no duplicates and no control or format
+  characters; `expiresAt` is later than `createdAt`; `mimeType` is one of
+  its `knownValues`.
+
+For version 1:
 
 - **Record keys** are TIDs (`key: tid`), and an `org.consentvid.consent`
   record's key MUST equal the key of the `org.consentvid.video` it references
@@ -523,7 +603,7 @@ lexicon descriptions, and every reader enforces it:
 
 Things the evolution rules forbid changing in place (string limits in
 graphemes, a `strongRef` subject, an open union for storage, kebab-case
-tokens, ...) are collected for a future revision in
+values, ...) shipped as new NSIDs, version 2: see
 [docs/lexicon-v2.md](docs/lexicon-v2.md).
 
 After changing a description, the lexicon authority must run
@@ -547,8 +627,9 @@ pytest -m network         # also hits the live network
 ruff check src tests && ruff format src tests
 ```
 
-Layout: `records` (URIs, datetimes, hashing) · `validate` (lexicon + domain
-rules) · `identity` (DID/handle → PDS, key) · `verify` (CAR/MST/signature
+Layout: `records` (URIs, datetimes, hashing) · `versions` (V1/V2 records
+and their common internal view) · `validate` (lexicon + domain rules) ·
+`signals` (bot label, AI-usage preferences) · `identity` (DID/handle → PDS, key) · `verify` (CAR/MST/signature
 proofs) · `media` (probe + metadata stripping) · `storage` · `policy` ·
 `croissant` · `resync` · `appview` · `c2pa_embed` · `cli`.
 

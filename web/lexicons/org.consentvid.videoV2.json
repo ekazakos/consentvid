@@ -1,0 +1,142 @@
+{
+  "lexicon": 1,
+  "id": "org.consentvid.videoV2",
+  "defs": {
+    "main": {
+      "type": "record",
+      "description": "A video registered for inclusion in a consent-first dataset (version 2 of org.consentvid.video). The record commits to the bytes by content hash and says where they are stored; it does not hold them. Its consent, if any, is the org.consentvid.consentV2 record in the same repo with the same record key (a sidecar record). Records are public: never put personal data or filesystem paths in them.",
+      "key": "tid",
+      "record": {
+        "type": "object",
+        "required": ["title", "contentHash", "storage", "createdAt"],
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 3000,
+            "maxGraphemes": 300,
+            "description": "Human-readable title."
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 30000,
+            "maxGraphemes": 3000
+          },
+          "contentHash": {
+            "type": "string",
+            "format": "cid",
+            "description": "The video bytes' CIDv1 with the raw codec and a sha-256 multihash, in base32 (bafkrei...): the same value a PDS blob ref carries for these bytes. Readers reject any other codec or hash."
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991,
+            "description": "Size of the video bytes, in bytes."
+          },
+          "mimeType": {
+            "type": "string",
+            "maxLength": 128,
+            "description": "MIME type of the video bytes. Readers reject values outside knownValues: it becomes the dataset's encodingFormat, which dataset loaders act on.",
+            "knownValues": [
+              "video/3gpp",
+              "video/matroska",
+              "video/mp2t",
+              "video/mp4",
+              "video/mpeg",
+              "video/quicktime",
+              "video/vnd.avi",
+              "video/webm",
+              "video/x-matroska",
+              "video/x-msvideo"
+            ]
+          },
+          "durationMs": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991,
+            "description": "Duration in milliseconds."
+          },
+          "width": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991,
+            "description": "Frame width in pixels."
+          },
+          "height": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991,
+            "description": "Frame height in pixels."
+          },
+          "langs": {
+            "type": "array",
+            "maxLength": 3,
+            "items": { "type": "string", "format": "language" },
+            "description": "Spoken languages, primary first (BCP-47, lowercase primary subtag, e.g. en, cs, pt-BR)."
+          },
+          "tags": {
+            "type": "array",
+            "maxLength": 8,
+            "items": { "type": "string", "minLength": 1, "maxLength": 640, "maxGraphemes": 64 },
+            "description": "Topic tags."
+          },
+          "storage": {
+            "type": "union",
+            "refs": ["#r2Ref", "#ipfsRef", "#peertubeRef", "#urlRef", "#localRef"],
+            "description": "Where the bytes live. Readers that don't know a storage type treat the bytes as unreachable."
+          },
+          "labels": {
+            "type": "union",
+            "refs": ["com.atproto.label.defs#selfLabels"],
+            "description": "Self-labels the contributor applies to the video (e.g. 'nudity', 'sexual', 'porn', 'graphic-media'). Dataset tools leave labeled clips out unless asked to include them."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "datetime",
+            "description": "Record write time."
+          }
+        }
+      }
+    },
+    "r2Ref": {
+      "type": "object",
+      "description": "The public https URL of a Cloudflare R2 object.",
+      "required": ["url"],
+      "properties": {
+        "url": { "type": "string", "format": "uri", "maxLength": 2048, "description": "https URL on a public host and the default port, without credentials." }
+      }
+    },
+    "ipfsRef": {
+      "type": "object",
+      "description": "Bytes on IPFS.",
+      "required": ["cid"],
+      "properties": {
+        "cid": { "type": "string", "maxLength": 128, "description": "The IPFS CID: CIDv1 in lowercase base32 (b...) or CIDv0 (Qm...); IPFS commonly uses codecs other than atproto's, so this is not format 'cid'." }
+      }
+    },
+    "peertubeRef": {
+      "type": "object",
+      "description": "A video on a PeerTube instance.",
+      "required": ["url"],
+      "properties": {
+        "url": { "type": "string", "format": "uri", "maxLength": 2048, "description": "https watch or download URL on a public host and the default port, without credentials." }
+      }
+    },
+    "urlRef": {
+      "type": "object",
+      "description": "Bytes at a public https URL.",
+      "required": ["url"],
+      "properties": {
+        "url": { "type": "string", "format": "uri", "maxLength": 2048, "description": "https URL on a public host and the default port, without credentials." }
+      }
+    },
+    "localRef": {
+      "type": "object",
+      "description": "Bytes kept by the contributor, not published. Never dereferenced.",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 256, "description": "An opaque name (no control characters). Never a filesystem path: records are public." }
+      }
+    }
+  }
+}

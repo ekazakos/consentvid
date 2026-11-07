@@ -1,0 +1,109 @@
+{
+  "lexicon": 1,
+  "id": "org.consentvid.consentV2",
+  "defs": {
+    "main": {
+      "type": "record",
+      "description": "A consent receipt (version 2 of org.consentvid.consent) declaring permissions for AI use of an org.consentvid.videoV2 record, signed by the contributor's repo key. The record key MUST equal the record key of the referenced video (a sidecar record, like app.bsky.feed.threadgate); consents with any other key are ignored. So there is at most one consent per video: replacing terms rewrites this record, and deleting it withdraws consent (consent must always be withdrawable, GDPR Art. 7(3)). Vocabulary values must not contain control or format characters, and list fields must not repeat a value.",
+      "key": "tid",
+      "record": {
+        "type": "object",
+        "required": [
+          "subject",
+          "modalities",
+          "purposes",
+          "modelClasses",
+          "compensation",
+          "peoplePresent",
+          "authorshipAttested",
+          "adultAttested",
+          "createdAt"
+        ],
+        "properties": {
+          "subject": {
+            "type": "ref",
+            "ref": "com.atproto.repo.strongRef",
+            "description": "The exact video version this consent applies to: uri is the DID-form at://<did>/org.consentvid.videoV2/<rkey> in the same repo, with the same record key; cid is that record's CID (dag-cbor). If the video record is rewritten, this consent no longer applies to it."
+          },
+          "modalities": {
+            "type": "array",
+            "minLength": 1,
+            "maxLength": 8,
+            "items": {
+              "type": "string",
+              "maxLength": 64,
+              "knownValues": ["video", "audio", "transcript", "face", "voice"]
+            },
+            "description": "What may be used: 'video' = the picture; 'audio' = the soundtrack; 'transcript' = text derived from the speech; 'face' = identifiable faces (e.g. for face recognition or synthesis); 'voice' = identifiable voices (e.g. for speaker recognition or voice cloning). 'face' and 'voice' are incompatible with peoplePresent 'no-identifiable-people'."
+          },
+          "purposes": {
+            "type": "array",
+            "minLength": 1,
+            "maxLength": 8,
+            "items": {
+              "type": "string",
+              "maxLength": 64,
+              "knownValues": ["training", "evaluation", "benchmarking"]
+            },
+            "description": "What the data may be used FOR."
+          },
+          "modelClasses": {
+            "type": "array",
+            "minLength": 1,
+            "maxLength": 8,
+            "items": {
+              "type": "string",
+              "maxLength": 64,
+              "knownValues": ["academic", "open-weights", "commercial"]
+            },
+            "description": "WHO may use the data, and under what release model."
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "datetime",
+            "description": "Optional expiry; after this time the consent is no longer valid. Must be later than createdAt."
+          },
+          "compensation": {
+            "type": "string",
+            "maxLength": 64,
+            "knownValues": ["none", "credit-only", "monetary"],
+            "description": "What compensation the contributor declares they expect. Informational only: ConsentVid does not broker or enforce payment."
+          },
+          "authorshipAttested": {
+            "type": "boolean",
+            "const": true,
+            "description": "The contributor affirms, under their signing key, that they recorded this video themselves (or are otherwise its rightful author) and are authorized to grant this consent."
+          },
+          "adultAttested": {
+            "type": "boolean",
+            "const": true,
+            "description": "The contributor affirms, under their signing key, that they are an adult (18 or older, or the age of majority where they live, if higher) and legally capable of giving this consent. Self-declared, not verified."
+          },
+          "rightsBasis": {
+            "type": "string",
+            "maxLength": 64,
+            "knownValues": ["own-recording", "licensed", "other-rights-holder"],
+            "description": "Basis on which the contributor may grant consent: 'own-recording' = they captured it, 'licensed' = licensed from the creator, 'other-rights-holder' = other documented basis."
+          },
+          "captureProvenance": {
+            "type": "string",
+            "maxLength": 64,
+            "knownValues": ["attested", "self-attested", "unverified"],
+            "description": "Strength of the capture-provenance guarantee. 'attested' = capture-time cryptographic provenance (e.g. C2PA/CAWG) binds the recording to the contributor's DID; 'self-attested' = signed authorship attestation only; 'unverified' = neither."
+          },
+          "peoplePresent": {
+            "type": "string",
+            "maxLength": 64,
+            "knownValues": ["only-me", "all-consented", "no-identifiable-people"],
+            "description": "Who identifiably appears or is heard in the video: 'only-me' = only the contributor; 'all-consented' = every identifiable person gave the contributor permission for this use; 'no-identifiable-people' = no identifiable face or voice. Readers reject other values."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "datetime",
+            "description": "Record write time. Informational: there is only ever one consent per video."
+          }
+        }
+      }
+    }
+  }
+}

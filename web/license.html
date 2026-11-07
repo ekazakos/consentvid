@@ -45,6 +45,14 @@
   declaration, for example identifiable bystanders in a clip marked <code>onlyMe</code>, stop using
   it and report it.</p>
 
+  <h2>Bots, AI-usage preferences and labels</h2>
+  <p>A receipt from an account that labels itself a bot (the <code>bot</code> self-label on its
+  profile) is not valid consent. Nor is a receipt granting training from an account whose own
+  published AI-usage preference (<code>community.lexicon.preference.ai</code>) denies training: the
+  contributor's preference wins. Clips the contributor labeled <code>porn</code>,
+  <code>sexual</code>, <code>nudity</code> or <code>graphic-media</code> are left out of datasets
+  unless you explicitly include them. <code>resync</code> checks all of this and drops such clips.</p>
+
   <h2>Withdrawal</h2>
   <p>Contributors can withdraw consent at any time by deleting the receipt (consent to processing
   personal data must be withdrawable, GDPR Art. 7(3)). Before every use, and at least before each

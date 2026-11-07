@@ -14,6 +14,16 @@ from pathlib import Path
 
 VIDEO_NSID = "org.consentvid.video"
 CONSENT_NSID = "org.consentvid.consent"
+# The V2 record formats (docs/lexicon-v2.md). Writers write only V2; readers
+# accept both, and a consent only ever binds a video of its own version.
+VIDEO_V2_NSID = "org.consentvid.videoV2"
+CONSENT_V2_NSID = "org.consentvid.consentV2"
+VIDEO_NSIDS = (VIDEO_NSID, VIDEO_V2_NSID)
+CONSENT_NSIDS = (CONSENT_NSID, CONSENT_V2_NSID)
+RECORD_NSIDS = VIDEO_NSIDS + CONSENT_NSIDS
+# video collection -> its consent collection, and back.
+CONSENT_FOR_VIDEO = {VIDEO_NSID: CONSENT_NSID, VIDEO_V2_NSID: CONSENT_V2_NSID}
+VIDEO_FOR_CONSENT = {c: v for v, c in CONSENT_FOR_VIDEO.items()}
 
 # Syntax per atproto.com/specs (did, nsid, record-key). Deliberately strict:
 # these strings end up in public records and manifests.

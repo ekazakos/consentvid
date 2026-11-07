@@ -1,6 +1,13 @@
 import pytest
 
-from conftest import ALICE, BOB, K1, consent_record, video_record
+from conftest import (
+    ALICE,
+    BOB,
+    K1,
+    consent_record,
+    video_record,
+    video_v2_record,
+)
 from consentvid.records import format_dt, is_expired, normalize_dt, parse_at_uri, parse_dt
 from consentvid.validate import validate_in_repo, validate_record, write_policy_errors
 
@@ -449,17 +456,28 @@ def test_syntax_length_caps():
     assert is_nsid("org.consent-vid.video")
 
 
-def test_no_lexicon_uses_graphemes():
-    """The validator doesn't count grapheme clusters. A future V2 NSID that
-    adopts maxGraphemes needs a real counter (e.g. the `regex` package's
-    \\X) first; see docs/lexicon-v2.md."""
-    import json as _json
+@pytest.mark.parametrize(
+    "text,n",
+    [("abc", 3), ("e\u0301", 1), ("\U0001F44D\U0001F3FD", 1), ("\U0001F1E8\U0001F1FF", 1),
+     ("\u0928\u093f", 1), ("\U0001F468\u200d\U0001F469\u200d\U0001F467", 1), ("", 0)],
+)
+def test_grapheme_len_counts_clusters(text, n):
+    """maxGraphemes counts extended grapheme clusters, not code points."""
+    from consentvid.validate import grapheme_len
 
-    from consentvid.lexicons import discover_lexicons, load_lexicon
+    assert grapheme_len(text) == n
 
-    for nsid in discover_lexicons():
-        text = _json.dumps(load_lexicon(nsid))
-        assert "maxGraphemes" not in text and "minGraphemes" not in text
+
+def test_v2_title_limits_are_graphemes_and_bytes():
+    from consentvid.records import VIDEO_V2_NSID
+
+    flag = "\U0001F1E8\U0001F1FF"  # one grapheme, 8 bytes
+    ok = video_v2_record(title=flag * 300)  # 300 graphemes, 2400 bytes
+    assert validate_record(VIDEO_V2_NSID, ok) == []
+    errs = validate_record(VIDEO_V2_NSID, video_v2_record(title="x" * 301))
+    assert any("exceeds maxGraphemes 300" in e for e in errs)
+    errs = validate_record(VIDEO_V2_NSID, video_v2_record(title="e" + "\u0301" * 2000))  # 1 grapheme, 4001 bytes
+    assert any("exceeds maxLength 3000" in e for e in errs)
 
 
 @pytest.mark.parametrize(

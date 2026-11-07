@@ -70,7 +70,7 @@
     <h2 class="h2">Three parties, <span class="grad">one open protocol</span>.</h2>
     <p class="sub">Every record lives in the contributor's own ATProto repo, signed by their key. No central database. Revocation is a record deletion. Storage is decoupled from metadata.</p>
     <div class="feat">
-      <div class="fcard"><div class="fnum">1</div><p class="who">Contributor</p><h3>Sign consent</h3><p>Register a clip and a granular receipt on your own PDS — purpose × model class × modality × expiry × revocable. Your repo key signs both.</p></div>
+      <div class="fcard"><div class="fnum">1</div><p class="who">Contributor</p><h3>Sign consent</h3><p>Register a clip and a granular receipt on your own PDS — purpose × model class × modality × expiry, always revocable. Your repo key signs both.</p></div>
       <div class="fcard"><div class="fnum">2</div><p class="who">AppView</p><h3>Index the firehose</h3><p>Subscribes to Jetstream, indexes every <span class="mono">org.consentvid.*</span> record, validating on ingest. Deletions mark consent revoked in real time.</p></div>
       <div class="fcard"><div class="fnum">3</div><p class="who">Researcher</p><h3>Cite signed receipts</h3><p>Export a Croissant-RAI manifest. Each file embeds its consent receipt's AT-URI. Re-sync revocations before each training run.</p></div>
     </div>
@@ -79,7 +79,7 @@
   <section id="status" class="wrap">
     <p class="eyebrow">Status</p>
     <h2 class="h2">Working today, <span class="grad">on the live network</span>.</h2>
-    <p class="sub">Registered, validated, and revoked on live ATProto. Bytes on R2, IPFS, or PeerTube; the platform holds only signed records and hashes. The records shown below are an illustrative example that has since been withdrawn: <span class="mono">consentvid resync</span> on the <a href="dataset.json">sample manifest</a> drops its clip, as it should.</p>
+    <p class="sub">Registered, validated, and revoked on live ATProto. Bytes on R2, IPFS, or PeerTube; the platform holds only signed records and hashes. The records shown below are an illustrative example in the version-1 format (new records are written as <span class="mono">org.consentvid.videoV2</span> / <span class="mono">consentV2</span>) that has since been withdrawn: <span class="mono">consentvid resync</span> on the <a href="dataset.json">sample manifest</a> drops its clip, as it should.</p>
     <div class="livecard">
       <p style="color:var(--muted);margin:0 0 4px;font-size:15px">The AppView indexes Jetstream in real time (validating on ingest); datasets export a Croissant-RAI manifest; consumers re-sync with <span class="mono">consentvid resync</span>, which verifies every receipt against the contributor's signed repo commit and Merkle proof — trusting no server; consent can be embedded in the bytes as a signed C2PA manifest; and the <span class="mono">org.consentvid.*</span> lexicons are published and DNS-resolvable.</p>
       <div class="arts">

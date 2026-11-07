@@ -1,94 +1,86 @@
-# Checklist for a future `org.consentvid.*V2` lexicon
+# Version 2: `org.consentvid.videoV2` and `org.consentvid.consentV2`
 
-**Where things stand (2026-11-07).** No `org.consentvid.*` records exist on
-the network: the relay's `com.atproto.sync.listReposByCollection` lists only
-the lexicon authority's repo for both NSIDs, and `listRecords` there returns
-no records. The V1 schemas are nevertheless frozen, by this project's own rule,
-because they are *published* (as `com.atproto.lexicon.schema` records,
-resolvable through `_lexicon.consentvid.org`) and other software may already
-validate against them. The
-[lexicon evolution rules](https://atproto.com/specs/lexicon#lexicon-evolution)
-allow only compatible changes to a published NSID: new optional fields, new
-`knownValues`, better descriptions. Whether the items below are worth a V2 is
-an open decision (deferred as R3-16).
+**Shipped (2026-11-07).** Version 2 exists because no `org.consentvid.*`
+records existed on the network yet: the relay's
+`com.atproto.sync.listReposByCollection` listed only the lexicon authority's
+repo for both NSIDs, and `listRecords` there returned none. A clean break
+cost nothing then. The version-1 schemas stay published and frozen (never
+delete a published lexicon), and every reader still accepts V1 records:
 
-**The numbered items below can't be applied to the existing NSIDs.** Each one
-adds, tightens or retypes a constraint, so it can only land in a new NSID (for
-example `org.consentvid.videoV2`), with readers accepting both during a
-transition. `consentvid publish-lexicons` refuses them on the current NSIDs
-(see `lexicons.compat_errors`). Compatible additions are listed separately at
-the end.
+- the CLI writes only V2 (`contribute`, `register-video`, `attach-consent`);
+  `attach-consent` refuses a V1 video, because
+- a consent binds only a video of its own version (a V2 consent's subject
+  must be an `org.consentvid.videoV2` record; a V1 consent's `videoUri` an
+  `org.consentvid.video` one);
+- `verify`, `resync`, `export`, `embed-c2pa`, `revoke` and the AppView
+  (Jetstream collections, `listReposByCollection`, backfill) read both;
+- past validation, both versions become one internal view
+  (`consentvid/versions.py`) in V1's field names and lowerCamelCase
+  vocabulary, which is also what manifests and C2PA receipts contain, so a
+  receipt reads the same whichever version was signed.
 
+These items could not be applied to the V1 NSIDs, because each adds,
+tightens or retypes a constraint (`lexicons.compat_errors` refuses them).
 They follow the [lexicon style guide](https://atproto.com/guides/lexicon-style-guide)
-and Bluesky's own schemas.
+and Bluesky's own schemas. How each landed:
 
-1. **Limit strings in graphemes as well as bytes.** `title` has only
-   `maxLength: 300` (UTF-8 bytes), so a CJK title gets about 100 characters,
-   and `description` (3000 bytes) the same. Bluesky's `app.bsky.feed.post#text`
-   uses `maxGraphemes: 300` with `maxLength: 3000`; a profile description uses
-   `maxGraphemes: 256` with `maxLength: 2560`. Use the same 1:10 pattern.
-   Adopting `maxGraphemes` needs a real grapheme-cluster counter in
-   `validate.py` first (e.g. the `regex` package's `\X`); today a test refuses
-   any lexicon that uses it.
-2. **Bound every string.** `storageRef.value`, `contentHash`, `language` and the
-   consent's open-vocabulary strings (`compensation`, `rightsBasis`,
-   `captureProvenance`, `peoplePresent`) have no or loose `maxLength`.
-   Unbounded strings are a style-guide anti-pattern.
-3. **Tags like Bluesky's.** `app.bsky.feed.post#tags`: items with
-   `maxGraphemes: 64` and `maxLength: 640`, array `maxLength: 8`.
-4. **`format: "language"`** for the spoken language, and an array like
-   `app.bsky.feed.post#langs` (`maxLength: 3`) if several are allowed. Today
-   `language` is a plain string whose BCP-47 syntax only our readers enforce.
-5. **A `com.atproto.repo.strongRef` subject** instead of the flat
-   `videoUri` + `videoCid` pair (as `app.bsky.feed.like#subject` does), and
-   make it required in the schema: a consent must always pin the video
-   version (readers already reject a consent without `videoCid`).
-6. **An open union for storage** instead of the stringly-typed
-   `storageRef {kind, value}`: one object type per backend
-   (`#r2Ref {url}`, `#ipfsRef {cid}`, `#peertubeRef {url}`, `#urlRef {url}`,
-   `#localRef {name}`), each with its own formats (`format: "uri"`,
-   `format: "cid"` where it applies). A union lets readers skip kinds they
-   don't know, and lets the schema state each kind's syntax. (A PDS-blob
-   kind does not need to wait for this: see "Compatible additions" below.)
-7. **Kebab-case tokens.** The style guide's convention for `knownValues` is
-   kebab-case (`only-me`, `all-consented`, `open-weights`), not lowerCamelCase
-   (`onlyMe`, `allConsented`, `openWeights`). Better still, declare them as
-   `token` defs so they are namespaced and documented
-   (`org.consentvid.defs#onlyMe`).
-8. **`minimum: 0` and `maximum: 9007199254740991`** (2^53-1, the data
-   model's limit for JavaScript readers) on `durationMs`, `width` and
-   `height` (both bounds are reader rules today, stated in the descriptions).
-9. **No always-true required booleans.** `revocable` is required but must
-   always be `true` (consent must be withdrawable), so it carries no
-   information. Drop it and say so in the description. Likewise make the
-   attestations that readers require (`adultAttested`, `peoplePresent`)
-   required in the schema instead of "optional in the schema but required by
-   readers".
-10. **`contentHash` as a CID.** `{type: "string", format: "cid"}` holding the
-    CIDv1 raw-codec sha-256 of the bytes (`bafkrei...`, exactly what a PDS
-    blob ref carries) instead of `sha256-<hex>`, which looks like SRI (that
-    is base64) and is checked only by ConsentVid code. Generic validators
-    check `format: cid`; no `maxLength` alongside the format.
-    `records.raw_cid_from_sha256()` converts today's value.
-11. **Keep the sidecar rule** (consent record key = video record key) and keep
-    `key: "tid"` for both; state it in the description, as today.
+1. **Strings limited in graphemes as well as bytes.** `title`:
+   `maxGraphemes: 300`, `maxLength: 3000`; `description`: 3000 / 30000 (the
+   1:10 pattern of `app.bsky.feed.post#text`). `validate.py` counts extended
+   grapheme clusters with the `regex` package (`\X`).
+2. **Every string bounded.** Storage values, local names, vocabulary strings
+   (64 bytes), label values (128). Strings with a `format` (`cid`,
+   `datetime`, `at-uri`, `language`) are bounded by it; a test checks that
+   nothing else is unbounded.
+3. **Tags like Bluesky's.** Items `maxGraphemes: 64`, `maxLength: 640`; at
+   most 8.
+4. **`langs`**: up to three `format: "language"` tags, primary first (like
+   `app.bsky.feed.post#langs`), instead of one `language` string.
+5. **`subject`: a `com.atproto.repo.strongRef`**, required, instead of
+   `videoUri` + optional `videoCid`.
+6. **`storage`: an open union** (`#r2Ref {url}`, `#ipfsRef {cid}`,
+   `#peertubeRef {url}`, `#urlRef {url}`, `#localRef {name}`), URLs as
+   `format: "uri"`. `#ipfsRef.cid` is *not* `format: "cid"`: IPFS CIDs are
+   often CIDv0 or dag-pb, which atproto's `cid` format doesn't cover. A reader
+   that doesn't know a member type treats the bytes as unreachable.
+7. **Kebab-case values** (`only-me`, `open-weights`, `self-attested`, ...).
+   Plain `knownValues` strings, not `token` defs: the style guide asks for
+   kebab-case fixed strings and reserves tokens for values with subjective
+   definitions that third parties extend, which these are not. The
+   deprecated `researchOnly` / `foundationModel` are not in V2.
+8. **`minimum: 0`, `maximum: 2^53-1`** on `durationMs`, `width`, `height`.
+9. **No `revocable`** (every consent is withdrawable, so it carried no
+   information). `authorshipAttested`, `adultAttested` and `peoplePresent`
+   are required; the two attestations are `const: true`: they are signed
+   affirmations, the reason the record exists, not configuration.
+10. **`contentHash` is a CID**: the bytes' CIDv1, raw codec, sha-256
+    (`bafkrei...`), exactly what a PDS blob ref carries. Readers reject other
+    codecs.
+11. **The sidecar rule and `key: "tid"` are kept** for both records.
 
-When a V2 lands, readers must accept both versions, `export` should write the
-new one, and the old NSIDs stay published (never delete a published lexicon).
+Also new in `videoV2`, both optional:
 
-## Compatible additions to the current NSIDs
+- **`size`**: the byte size (as blob refs and Streamplace's tracks carry).
+- **`labels`**: an open union of `com.atproto.label.defs#selfLabels`, the
+  contributor's own labels (as on `app.bsky.feed.post`). `export`, `resync`
+  and the AppView leave out clips labeled `porn`, `sexual`, `nudity` or
+  `graphic-media` (Bluesky's global values) unless `--include-labeled`.
+
+Publishing: `consentvid publish-lexicons` creates the two new schema records
+(a new NSID has no published version to be compatible with) and updates the
+V1 ones only within the evolution rules.
+
+## Possible compatible additions
 
 These fit the evolution rules (`compat_errors` accepts them), so they can be
-added to `org.consentvid.video` without a new NSID. Not scheduled.
+added to `org.consentvid.videoV2` without a new NSID. Not scheduled.
 
-- **An optional PDS-blob storage kind** (R1-27, deferred): an optional
-  top-level `blob` property (`{type: "blob", accept: ["video/*"], maxSize:
-  ...}`) plus a new `knownValue` `"pds"` for `storageRef.kind`.
-  `storage_ref_errors` already treats unknown kinds as opaque, so today's
+- **An optional PDS-blob storage kind** (R1-27, deferred): a new storage
+  union member (e.g. `#blobRef {blob: {type: "blob", accept: ["video/*"],
+  maxSize: ...}}`). Readers treat unknown members as unreachable, so today's
   readers ignore it safely. Readers that support it must check:
-  - `blob.ref` equals the raw-codec CID of `contentHash`
-    (`records.raw_cid_from_sha256`), and `blob.size` equals the file size, or
-    the blob doesn't bind to the consent;
+  - `blob.ref` equals `contentHash` (in V2 already the raw-codec CID), and
+    `blob.size` equals `size`, or the blob doesn't bind to the consent;
   - `blob.mimeType` is equivalent to `mimeType`, through an alias table, not
     string equality: the PDS stores the type its file-type sniffing reports
     and requires blob refs to match it exactly, so a `.mkv` upload comes back

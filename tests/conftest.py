@@ -43,6 +43,20 @@ def _isolated_home(tmp_path, monkeypatch):
     monkeypatch.setattr(resync, "_relay_lookup", lambda did: None)
     resync.clear_relay_cache()
 
+    # Account signals (bot self-label, AI-usage preferences) and the relay
+    # witness: offline unless a test restores them.
+    import consentvid.signals as signals
+
+    monkeypatch.setattr(signals, "_lookup", lambda did: signals.NONE)
+    signals.clear_cache()
+    monkeypatch.setattr(resync, "_witness_lookup", lambda did: None)
+    resync.clear_witness_cache()
+    import consentvid.appview as appview
+
+    # Existing AppView tests predate account-signal checks; tests of the
+    # gate turn it back on.
+    monkeypatch.setattr(appview, "REQUIRE_SIGNAL_CHECK", False)
+
     monkeypatch.setattr(cli, "_revoke_sleep", lambda s: None)
     monkeypatch.setattr(cli, "CONFIG_DIR", tmp_path / "home")
     monkeypatch.setattr(cli, "SESSION_PATH", tmp_path / "home" / "session.txt")
@@ -83,6 +97,46 @@ def consent_record(did=ALICE, rkey=K1, **kw):
         "rightsBasis": "ownRecording",
         "captureProvenance": "selfAttested",
         "peoplePresent": "onlyMe",
+        "adultAttested": True,
+        "createdAt": "2026-01-01T00:00:00.000Z",
+    }
+    rec.update(kw)
+    return rec
+
+
+V2_HASH = "bafkreiflvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvm"  # HASH as a raw-codec CID
+
+
+def video_v2_record(**kw):
+    rec = {
+        "$type": "org.consentvid.videoV2",
+        "title": "A clip",
+        "contentHash": V2_HASH,
+        "storage": {"$type": "org.consentvid.videoV2#r2Ref", "url": "https://example.org/videos/x"},
+        "createdAt": "2026-01-01T00:00:00.000Z",
+    }
+    rec.update(kw)
+    return rec
+
+
+def video_v2_cid(**kw):
+    from consentvid.records import compute_cid
+
+    return compute_cid(video_v2_record(**kw))
+
+
+def consent_v2_record(did=ALICE, rkey=K1, video_cid=None, **kw):
+    rec = {
+        "$type": "org.consentvid.consentV2",
+        "subject": {"uri": f"at://{did}/org.consentvid.videoV2/{rkey}", "cid": video_cid or video_v2_cid()},
+        "modalities": ["video", "audio"],
+        "purposes": ["training"],
+        "modelClasses": ["academic"],
+        "compensation": "none",
+        "authorshipAttested": True,
+        "rightsBasis": "own-recording",
+        "captureProvenance": "self-attested",
+        "peoplePresent": "only-me",
         "adultAttested": True,
         "createdAt": "2026-01-01T00:00:00.000Z",
     }

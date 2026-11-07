@@ -6,6 +6,7 @@ import pytest
 from conftest import ALICE, BOB, K0, K1, K2, K3, VIDEO_CID, consent_record, video_record
 from consentvid import appview as av
 from consentvid import cli as _cli
+from consentvid.records import RECORD_NSIDS
 
 _REAL_REPO_STATUSES = _cli._repo_statuses  # before the autouse stub replaces it
 C, V = "org.consentvid.consent", "org.consentvid.video"
@@ -255,7 +256,7 @@ def test_backfill_ignores_foreign_uris(tmp_path, monkeypatch):
     }
     monkeypatch.setattr(identity, "resolve_did", lambda r: mallory)
     monkeypatch.setattr(identity, "public_client", lambda did: None)
-    monkeypatch.setattr(cli, "_list_all", lambda client, did, coll: listing[coll])
+    monkeypatch.setattr(cli, "_list_all", lambda client, did, coll: listing.get(coll, []))
     result = CliRunner().invoke(cli.main, ["appview", "backfill", "mallory.test"])
     assert result.exit_code == 0, result.output
     assert "0 record(s) indexed, 2 skipped" in result.output
@@ -416,14 +417,14 @@ def test_backfill_never_holds_the_write_lock_during_network_reads(monkeypatch):
         finally:
             probe.close()
         fetches.append(coll)
-        return listing[coll]
+        return listing.get(coll, [])
 
     monkeypatch.setattr(identity, "resolve_did", lambda r: ALICE)
     monkeypatch.setattr(identity, "public_client", lambda did: None)
     monkeypatch.setattr(cli, "_list_all", list_all)
     r = CliRunner().invoke(cli.main, ["appview", "backfill", "alice.test"])
     assert r.exit_code == 0 and "2 record(s) indexed" in r.output, r.output
-    assert fetches == [V, C]
+    assert fetches == list(RECORD_NSIDS)
 
 
 def test_backfill_warns_and_continues_on_a_looping_pds(monkeypatch):
@@ -472,7 +473,7 @@ def test_backfill_of_invalid_rewrite_leaves_nothing_usable(monkeypatch):
     }
     monkeypatch.setattr(identity, "resolve_did", lambda r: ALICE)
     monkeypatch.setattr(identity, "public_client", lambda did: None)
-    monkeypatch.setattr(cli, "_list_all", lambda client, did, coll: listing[coll])
+    monkeypatch.setattr(cli, "_list_all", lambda client, did, coll: listing.get(coll, []))
     r = CliRunner().invoke(cli.main, ["appview", "backfill", "alice.test"])
     assert r.exit_code == 0, r.output
     conn = av.connect()
@@ -498,7 +499,7 @@ def test_backfill_of_invalid_video_rewrite_removes_it(monkeypatch):
     }
     monkeypatch.setattr(identity, "resolve_did", lambda r: ALICE)
     monkeypatch.setattr(identity, "public_client", lambda did: None)
-    monkeypatch.setattr(cli, "_list_all", lambda client, did, coll: listing[coll])
+    monkeypatch.setattr(cli, "_list_all", lambda client, did, coll: listing.get(coll, []))
     r = CliRunner().invoke(cli.main, ["appview", "backfill", "alice.test"])
     assert r.exit_code == 0, r.output
     conn = av.connect()
@@ -541,7 +542,7 @@ def test_backfill_does_not_undo_concurrent_revocation(monkeypatch):
             av.set_cursor(idx, 9_000_000)
             idx.commit()
             idx.close()
-        return stale[coll]
+        return stale.get(coll, [])
 
     r = _backfill(monkeypatch, list_all)
     assert "changed during backfill" in r.output
@@ -564,7 +565,7 @@ def test_backfill_does_not_sweep_consent_created_during_listing(monkeypatch):
             av.handle_event(idx, commit(ALICE, C, K1, "create", consent_record(), cid="bafyc2", t=9_000_000))
             idx.commit()
             idx.close()
-        return stale[coll]
+        return stale.get(coll, [])
 
     _backfill(monkeypatch, list_all)
     conn = av.connect()
@@ -586,7 +587,7 @@ def test_backfill_does_not_resurrect_video_deleted_during_listing(monkeypatch):
             av.handle_event(idx, commit(ALICE, V, K1, "delete", t=9_000_000))
             idx.commit()
             idx.close()
-        return stale[coll]
+        return stale.get(coll, [])
 
     _backfill(monkeypatch, list_all)
     assert av.connect().execute("SELECT COUNT(*) FROM videos").fetchone()[0] == 0
@@ -700,7 +701,7 @@ def test_backfill_does_not_resurrect_never_indexed_consent_deleted_during_listin
             av.handle_event(idx, commit(ALICE, C, K1, "delete", t=9_000_000))
             idx.commit()
             idx.close()
-        return stale[coll]
+        return stale.get(coll, [])
 
     _backfill(monkeypatch, list_all)
     conn = av.connect()
@@ -788,7 +789,14 @@ def test_parse_frame_v2_shapes():
 
 def test_stream_url_is_v2_without_lossy_options():
     url = av.stream_url("wss://js.example/xrpc/network.bsky.jetstream.subscribeEvents")
-    assert "collections=org.consentvid.video&collections=org.consentvid.consent" in url
+    from urllib.parse import parse_qs, urlsplit
+
+    wanted = parse_qs(urlsplit(url).query)["collections"]
+    # Both record versions, plus the two account-signal collections.
+    assert wanted == [
+        "org.consentvid.video", "org.consentvid.videoV2", "org.consentvid.consent", "org.consentvid.consentV2",
+        "community.lexicon.preference.ai", "app.bsky.actor.profile",
+    ]
     # R2-06: exactly the kinds the indexer acts on; never #identity.
     assert "&kinds=commit&kinds=account&kinds=sync" in url and "identity" not in url
     assert "maxMessageSizeBytes" not in url and "wanted" not in url
@@ -844,7 +852,7 @@ def test_seq_from_another_instance_is_not_reused(tmp_path, monkeypatch):
     conn = av.connect(tmp_path / "a.db")
     recent = av._now_us() - 60_000_000
     av._set_meta(conn, av.SEQ_KEY, 42)
-    av._set_meta(conn, av.HOST_KEY, "jetstream.us-west.bsky.network")
+    av._set_meta(conn, av.HOST_KEY, "jetstream.elsewhere.example")  # not one of ours
     av.set_cursor(conn, recent)
     conn.commit()
     calls = []
@@ -1066,7 +1074,7 @@ def test_backfill_after_sync_unhides_and_revokes_only_missing_records(monkeypatc
         V: [SimpleNamespace(uri=f"at://{ALICE}/{V}/{k}", cid=VIDEO_CID, value=video_record()) for k in (K1, K2)],
         C: [SimpleNamespace(uri=f"at://{ALICE}/{C}/{K1}", cid="bafyc1", value=consent_record())],
     }
-    _backfill(monkeypatch, lambda client, did, coll: listing[coll])
+    _backfill(monkeypatch, lambda client, did, coll: listing.get(coll, []))
     conn = av.connect()
     assert [r["rkey"] for r in av.query_consents(conn)] == [K1]
     assert [r["uri"] for r in av.revocations(conn)] == [f"at://{ALICE}/{C}/{K2}"]
@@ -1119,7 +1127,7 @@ def test_backfill_all_reaches_each_did_once_and_repairs_the_gap(monkeypatch):
     av.queue_backfill(conn, BOB, "test")
     conn.commit()
     listed = {V: [ALICE, BOB], C: [ALICE]}
-    monkeypatch.setattr(av, "list_repos_by_collection", lambda relay, nsid: listed[nsid])
+    monkeypatch.setattr(av, "list_repos_by_collection", lambda relay, nsid: listed.get(nsid, []))
     seen = []
 
     def backfill(conn, repo, relay=None):
@@ -1180,7 +1188,7 @@ def test_backfill_takes_account_status_from_pds_and_relay(monkeypatch, statuses,
     conn.commit()
     monkeypatch.setattr(cli, "_repo_statuses", lambda did, relay: statuses)
     listing = {V: [SimpleNamespace(uri=f"at://{ALICE}/{V}/{K1}", cid=VIDEO_CID, value=video_record())], C: []}
-    _backfill(monkeypatch, lambda client, did, coll: listing[coll])
+    _backfill(monkeypatch, lambda client, did, coll: listing.get(coll, []))
     row = av.connect().execute("SELECT active, updated_at FROM accounts WHERE did = ?", (ALICE,)).fetchone()
     if active == "unchanged":
         assert row["active"] == 0 and row["updated_at"] == "2000-01-01T00:00:00.000Z"
@@ -1453,7 +1461,7 @@ def _lagging_backfill(monkeypatch, relay_answer, listing=None):
 
     def list_all(client, did, coll):
         listed.append(coll)
-        return listing[coll]
+        return listing.get(coll, [])
 
     monkeypatch.setattr(cli, "_repo_statuses", lambda did, relay: [(True, None), relay_answer])
     monkeypatch.setattr(cli, "_list_all", list_all)
@@ -1468,7 +1476,7 @@ def test_backfill_lists_a_relay_throttled_repo_but_keeps_it_hidden(monkeypatch, 
     listed = _lagging_backfill(monkeypatch, (False, status))
     r = _backfill_all(monkeypatch)
     assert r.exit_code == 0, r.output
-    assert listed == [V, C]  # read from the PDS, not skipped as inactive
+    assert listed == list(RECORD_NSIDS)  # read from the PDS, not skipped as inactive
     assert f"relay reports {status}; listed from the PDS but hidden until the relay catches up" in r.output
     assert "1 repo(s) backfilled, 0 failed" in r.output and av.get_gap(av.connect()) is None
     conn = av.connect()
@@ -1587,7 +1595,7 @@ def _stub_listing(monkeypatch, listing=None):
     }
     monkeypatch.setattr(identity, "resolve_did", lambda r: r)
     monkeypatch.setattr(identity, "public_client", lambda did: None)
-    monkeypatch.setattr(cli, "_list_all", lambda client, did, coll: listing[coll])
+    monkeypatch.setattr(cli, "_list_all", lambda client, did, coll: listing.get(coll, []))
 
 
 def test_sync_then_one_drain_tick_unhides_without_a_cli_call(monkeypatch):
@@ -1835,7 +1843,7 @@ def test_backfill_keeps_a_sync_that_arrived_while_it_listed(monkeypatch):
             av.handle_event(idx, _sync(rev="3maaaaaaabaa2"))
             idx.commit()
             idx.close()
-        return listing[coll]
+        return listing.get(coll, [])
 
     _backfill(monkeypatch, list_all)
     conn = av.connect()

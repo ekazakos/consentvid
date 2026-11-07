@@ -23,12 +23,18 @@ from atproto import Client
 from atproto_client.exceptions import AtProtocolError, NetworkError
 from dotenv import dotenv_values
 
-from consentvid import __version__
+from consentvid import __version__, versions
 from consentvid.errors import ConfigError, ConsentVidError
 from consentvid.paths import secure_dir, write_private
 from consentvid.records import (
-    CONSENT_NSID,
+    CONSENT_FOR_VIDEO,
+    CONSENT_NSIDS,
+    CONSENT_V2_NSID,
+    RECORD_NSIDS,
+    VIDEO_FOR_CONSENT,
     VIDEO_NSID,
+    VIDEO_NSIDS,
+    VIDEO_V2_NSID,
     format_dt,
     hash_file,
     is_expired,
@@ -50,6 +56,7 @@ from consentvid.vocab import (
     PEOPLE_PRESENT,
     PURPOSES,
     RIGHTS_BASIS,
+    SENSITIVE_SELF_LABELS,
     STORAGE_KINDS,
 )
 
@@ -452,6 +459,53 @@ def _list_all(client: Client, did: str, collection: str) -> list:
     return list_all(client, did, collection)
 
 
+class _Rec:
+    """A listed record with its collection and internal view (versions.py)."""
+
+    __slots__ = ("uri", "cid", "nsid", "raw", "view")
+
+    def __init__(self, uri, cid, nsid, raw):
+        self.uri, self.cid, self.nsid, self.raw = uri, cid, nsid, raw
+        try:
+            self.view = versions.view(nsid, raw) if isinstance(raw, dict) else {}
+        except Exception:  # noqa: BLE001 — malformed: callers validate raw
+            self.view = {}
+
+    @property
+    def rkey(self) -> str:
+        return str(self.uri).rsplit("/", 1)[-1]
+
+
+def _list_records(client: Client, did: str, nsids) -> list[_Rec]:
+    """Every record in the given collections (both record versions)."""
+    return [
+        _Rec(r.uri, str(r.cid), nsid, to_dict(r.value)) for nsid in nsids for r in _list_all(client, did, nsid)
+    ]
+
+
+def _check_account(did: str, consent: dict) -> None:
+    """Refuse to write a consent the account's own signals contradict: a
+    bot account, or training while its AI-usage preference denies it
+    (consentvid.signals). A failed lookup refuses too: fail closed."""
+    from consentvid import signals
+
+    try:
+        account = signals.account_signals(did, fresh=True)
+    except Exception as e:  # noqa: BLE001
+        raise ConsentVidError(
+            f"could not check your account's bot label and AI-usage preferences ({type(e).__name__}: {_safe(e)}); "
+            "nothing was written, re-run"
+        ) from e
+    why = account.conflicts(consent)
+    if why:
+        hint = (
+            " Remove the 'bot' self-label from your profile if this is a person's account."
+            if account.bot
+            else " Change that preference (or drop --purpose training) first."
+        )
+        raise ConsentVidError(f"not writing this consent: {why}.{hint}")
+
+
 def _validate_flag(override: bool | None) -> bool | None:
     """Value for createRecord's `validate`. None = the PDS's default
     ("optimistic": validate lexicons it knows, accept others), which is the
@@ -670,12 +724,12 @@ def _video_options(f):
     for opt in reversed(
         [
             click.option(
-                "--title", required=True, help="Short title: max 300 UTF-8 bytes (about 100 CJK characters)."
+                "--title", required=True, help="Short title: max 300 characters."
             ),
             click.option(
                 "--description",
                 default="",
-                help="Optional longer description: max 3000 UTF-8 bytes (about 1000 CJK characters).",
+                help="Optional longer description: max 3000 characters.",
             ),
             click.option(
                 "--language",
@@ -687,7 +741,15 @@ def _video_options(f):
                 "--tag",
                 "tags",
                 multiple=True,
-                help="Topic tag, max 64 UTF-8 bytes (about 21 CJK characters). Repeatable, at most 32.",
+                help="Topic tag, max 64 characters. Repeatable, at most 8.",
+            ),
+            click.option(
+                "--self-label",
+                "self_labels",
+                multiple=True,
+                type=click.Choice(SENSITIVE_SELF_LABELS),
+                help="Label your own video (Bluesky's global self-labels). Dataset tools leave labeled "
+                "clips out unless asked to include them. Repeatable.",
             ),
             click.option(
                 "--storage-kind",
@@ -936,11 +998,11 @@ def _bytes_shared(
     any: same contentHash (R2 is content-addressed, so equal hashes share one
     object) or the same backend object however its pointer is spelled."""
     ident = _backend_identity(ref)
-    for r in _list_all(client, did, VIDEO_NSID):
+    for r in _list_records(client, did, VIDEO_NSIDS):
         if r.uri == exclude_uri:
             continue
-        v = to_dict(r.value)
-        if not isinstance(v, dict):
+        v = r.view
+        if not v:
             continue
         if content_hash and v.get("contentHash") == content_hash:
             return r.uri
@@ -994,6 +1056,7 @@ def _register_impl(
     keep_metadata,
     allow_duplicate,
     validate,
+    self_labels=(),
     consent_for=None,
 ):
     """Strip, hash, upload and write the video record.
@@ -1002,8 +1065,11 @@ def _register_impl(
     and its consent are written in ONE atomic com.atproto.repo.applyWrites
     commit, both under the same client-generated TID (the consent is the
     video's sidecar), with the video's CID computed locally. Either both
-    records exist or neither does. Returns (uri, cid, record, consent) where
-    consent is None or (consent_uri, consent_cid, consent_record)."""
+    records exist or neither does. Records are written as
+    org.consentvid.videoV2 / consentV2. Returns (uri, cid, record, consent)
+    where consent is None or (consent_uri, consent_cid, consent_record);
+    ``record`` and ``consent_record`` are internal views (versions.py), and
+    ``consent_for`` returns one too."""
     from consentvid import storage
     from consentvid.records import compute_cid, new_tid
 
@@ -1031,19 +1097,19 @@ def _register_impl(
         path, probe, content_hash = _prepare_bytes(video_path, kind, keep_metadata, Path(tmp), bool(storage_value))
 
         if not allow_duplicate:
-            for r in _list_all(client, did, VIDEO_NSID):
-                if to_dict(r.value).get("contentHash") == content_hash:
+            for r in _list_records(client, did, VIDEO_NSIDS):
+                if r.view.get("contentHash") == content_hash:
                     raise ConsentVidError(
                         f"these bytes are already registered as {r.uri} "
                         "(pass --allow-duplicate to register again)"
                     )
 
         record = {
-            "$type": VIDEO_NSID,
             "title": title,
             "contentHash": content_hash,
             "storageRef": {"kind": kind, "value": storage_value or ""},
             "createdAt": now_iso(),
+            "size": path.stat().st_size,
         }
         if mime := mime_for(path):
             record["mimeType"] = mime
@@ -1053,6 +1119,8 @@ def _register_impl(
             record["language"] = language
         if tags:
             record["tags"] = list(dict.fromkeys(tags))
+        if self_labels:
+            record["labels"] = list(dict.fromkeys(self_labels))
         if probe:
             record.update(probe.record_fields())
         if kind == "local" and not storage_value:
@@ -1070,13 +1138,14 @@ def _register_impl(
         # A client-chosen key (createRecord and applyWrites both take one), so
         # a write whose response is lost can be looked up afterwards.
         rkey = new_tid()
-        video_uri = f"at://{did}/{VIDEO_NSID}/{rkey}"
+        video_uri = f"at://{did}/{VIDEO_V2_NSID}/{rkey}"
         # Validate BEFORE uploading so a bad record never leaves orphaned bytes.
-        _check_before_write(VIDEO_NSID, _validation_view(record), did, rkey)
+        stand_in = versions.video_record_v2(_validation_view(record))
+        _check_before_write(VIDEO_V2_NSID, stand_in, did, rkey)
         if consent_for:
-            _check_before_write(
-                CONSENT_NSID, consent_for(video_uri, compute_cid(_validation_view(record))), did, rkey
-            )
+            first = consent_for(video_uri, compute_cid(stand_in))
+            _check_before_write(CONSENT_V2_NSID, versions.consent_record_v2(first), did, rkey)
+            _check_account(did, first)
 
         uploaded = False  # True only if THIS call created the stored object
         consent = None
@@ -1087,11 +1156,13 @@ def _register_impl(
                 record["storageRef"]["value"] = result.value
                 uploaded = result.created
                 click.echo(f"  -> {record['storageRef']['value']}")
-                _check_before_write(VIDEO_NSID, record, did, rkey)
+                _check_before_write(VIDEO_V2_NSID, versions.video_record_v2(record), did, rkey)
             if consent_for:
                 uri, cid, consent = _write_video_and_consent(client, did, rkey, record, consent_for, validate)
             else:
-                resp = client.com.atproto.repo.create_record(_write_params(did, VIDEO_NSID, record, validate, rkey=rkey))
+                resp = client.com.atproto.repo.create_record(
+                    _write_params(did, VIDEO_V2_NSID, versions.video_record_v2(record), validate, rkey=rkey)
+                )
                 uri, cid = resp.uri, resp.cid
                 _note_validation(resp)
         except Exception as e:
@@ -1147,37 +1218,43 @@ def _write_outcome(client: Client, did: str, rkey: str, video: dict, with_consen
         "the outcome of the write is unknown; run `consentvid list` to check (the uploaded bytes are kept)"
     )
     try:
-        got = _get_record_or_none(client, did, VIDEO_NSID, rkey)
-        consent = _get_record_or_none(client, did, CONSENT_NSID, rkey) if with_consent else None
+        got = _get_record_or_none(client, did, VIDEO_V2_NSID, rkey)
+        consent = _get_record_or_none(client, did, CONSENT_V2_NSID, rkey) if with_consent else None
     except Exception as check:  # noqa: BLE001 — can't tell what happened
         raise unknown from check
     if got is None and consent is None:
         return None  # nothing was written: the usual failure path
-    vcid = compute_cid(video)
+    vcid = compute_cid(versions.video_record_v2(video))
     if got is None or str(got.cid) != vcid:
         raise unknown
-    uri = f"at://{did}/{VIDEO_NSID}/{rkey}"
+    uri = f"at://{did}/{VIDEO_V2_NSID}/{rkey}"
     if not with_consent:
         return uri, vcid, None
     value = to_dict(consent.value) if consent is not None else None
-    if value is None or value.get("videoCid") != vcid:
+    view = versions.consent_view(CONSENT_V2_NSID, value) if isinstance(value, dict) else None
+    if view is None or view.get("videoCid") != vcid:
         raise unknown
-    return uri, vcid, (f"at://{did}/{CONSENT_NSID}/{rkey}", str(consent.cid), value)
+    return uri, vcid, (f"at://{did}/{CONSENT_V2_NSID}/{rkey}", str(consent.cid), view)
 
 
 def _write_video_and_consent(client: Client, did: str, rkey: str, video: dict, consent_for, validate):
-    """One applyWrites commit creating the video and its sidecar consent."""
+    """One applyWrites commit creating the video and its sidecar consent
+    (videoV2 + consentV2). ``video`` and the consent are internal views."""
     from consentvid.records import compute_cid
 
-    video_uri = f"at://{did}/{VIDEO_NSID}/{rkey}"
-    vcid = compute_cid(video)
+    video_uri = f"at://{did}/{VIDEO_V2_NSID}/{rkey}"
+    video_rec = versions.video_record_v2(video)
+    vcid = compute_cid(video_rec)
     consent = consent_for(video_uri, vcid)
-    _check_before_write(CONSENT_NSID, consent, did, rkey)
+    consent_rec = versions.consent_record_v2(consent)
+    _check_before_write(CONSENT_V2_NSID, consent_rec, did, rkey)
     params = {
         "repo": did,
         "writes": [
-            {"$type": "com.atproto.repo.applyWrites#create", "collection": VIDEO_NSID, "rkey": rkey, "value": video},
-            {"$type": "com.atproto.repo.applyWrites#create", "collection": CONSENT_NSID, "rkey": rkey, "value": consent},
+            {"$type": "com.atproto.repo.applyWrites#create", "collection": VIDEO_V2_NSID, "rkey": rkey,
+             "value": video_rec},
+            {"$type": "com.atproto.repo.applyWrites#create", "collection": CONSENT_V2_NSID, "rkey": rkey,
+             "value": consent_rec},
         ],
     }
     v = _validate_flag(validate)
@@ -1186,16 +1263,19 @@ def _write_video_and_consent(client: Client, did: str, rkey: str, video: dict, c
     resp = client.com.atproto.repo.apply_writes(params)
     results = list(getattr(resp, "results", None) or [])
     _note_validation(*results)
-    consent_uri = f"at://{did}/{CONSENT_NSID}/{rkey}"
-    consent_cid = str(results[1].cid) if len(results) > 1 and getattr(results[1], "cid", None) else compute_cid(consent)
+    consent_uri = f"at://{did}/{CONSENT_V2_NSID}/{rkey}"
+    consent_cid = (
+        str(results[1].cid) if len(results) > 1 and getattr(results[1], "cid", None) else compute_cid(consent_rec)
+    )
     if results and getattr(results[0], "cid", None) and str(results[0].cid) != vcid:
         # The PDS stored the video under a different CID than we computed
         # (it re-encoded the record?): re-pin the consent to the real one.
         actual = str(results[0].cid)
         _warn(f"the PDS assigned the video CID {_safe(actual)}, not {vcid}; re-pinning the consent to it")
         consent = {**consent, "videoCid": actual}
-        _check_before_write(CONSENT_NSID, consent, did, rkey)
-        fix = _write_params(did, CONSENT_NSID, consent, validate, rkey=rkey)
+        consent_rec = versions.consent_record_v2(consent)
+        _check_before_write(CONSENT_V2_NSID, consent_rec, did, rkey)
+        fix = _write_params(did, CONSENT_V2_NSID, consent_rec, validate, rkey=rkey)
         fix["swapRecord"] = consent_cid
         consent_cid = str(client.com.atproto.repo.put_record(fix).cid)
         vcid = actual
@@ -1204,8 +1284,9 @@ def _write_video_and_consent(client: Client, did: str, rkey: str, video: dict, c
 
 def _consent_record(video_uri: str, video_cid: str, *, modalities, purposes, model_classes, expires_at,
                     compensation, people, rights_basis, capture_provenance, **_ignored) -> dict:
+    """The internal view (versions.py) of a new consent; writers publish it
+    with versions.consent_record_v2."""
     record = {
-        "$type": CONSENT_NSID,
         "videoUri": video_uri,
         "videoCid": video_cid,
         "modalities": list(dict.fromkeys(modalities)),
@@ -1249,14 +1330,21 @@ def _attach(
         raise ConsentVidError("consent terms, --people and --attest-adult are required")
     did = client.me.did
     try:
-        vat = parse_at_uri(video_uri, VIDEO_NSID)
+        vat = parse_at_uri(video_uri)
+        if vat.collection == VIDEO_NSID:
+            raise ValueError(
+                f"{video_uri} is a version-1 video record; new consents are written as "
+                f"{CONSENT_V2_NSID}, which binds only {VIDEO_V2_NSID} records. Register the video again "
+                "(consentvid contribute) and revoke the old record"
+            )
+        vat = parse_at_uri(video_uri, VIDEO_V2_NSID)
     except ValueError as e:
         raise click.BadParameter(str(e), param_hint="VIDEO_URI") from None
     if vat.did != did:
         raise ConsentVidError(
             f"{video_uri} is not in your repo ({did}): you can only consent for videos you registered"
         )
-    video = client.com.atproto.repo.get_record({"repo": did, "collection": VIDEO_NSID, "rkey": vat.rkey})
+    video = client.com.atproto.repo.get_record({"repo": did, "collection": VIDEO_V2_NSID, "rkey": vat.rkey})
     record = _consent_record(
         str(vat),
         str(video.cid),
@@ -1269,15 +1357,17 @@ def _attach(
         rights_basis=rights_basis,
         capture_provenance=capture_provenance,
     )
-    _check_before_write(CONSENT_NSID, record, did, vat.rkey)
-    consent_uri = f"at://{did}/{CONSENT_NSID}/{vat.rkey}"
+    consent_rec = versions.consent_record_v2(record)
+    _check_before_write(CONSENT_V2_NSID, consent_rec, did, vat.rkey)
+    _check_account(did, record)
+    consent_uri = f"at://{did}/{CONSENT_V2_NSID}/{vat.rkey}"
     exists_msg = (
         f"this video already has consent {consent_uri}; pass --replace to change its terms "
         "(downstream datasets will see it as modified) or `consentvid revoke` it"
     )
-    params = _write_params(did, CONSENT_NSID, record, validate, rkey=vat.rkey)
+    params = _write_params(did, CONSENT_V2_NSID, consent_rec, validate, rkey=vat.rkey)
     if replace:
-        current = _get_record_or_none(client, did, CONSENT_NSID, vat.rkey)
+        current = _get_record_or_none(client, did, CONSENT_V2_NSID, vat.rkey)
         if current is not None:
             params["swapRecord"] = str(current.cid)
             try:
@@ -1292,7 +1382,7 @@ def _attach(
     except Exception as e:
         # A create under an existing key fails on the PDS: say why.
         try:
-            exists = _get_record_or_none(client, did, CONSENT_NSID, vat.rkey) is not None
+            exists = _get_record_or_none(client, did, CONSENT_V2_NSID, vat.rkey) is not None
         except Exception:  # noqa: BLE001 — report the original error
             exists = False
         if exists:
@@ -1456,25 +1546,27 @@ def list_records(what, as_json):
 
     client = get_client()
     did = client.me.did
-    videos = [] if what == "consents" else _list_all(client, did, VIDEO_NSID)
-    consents = [] if what == "videos" else _list_all(client, did, CONSENT_NSID)
+    videos = [] if what == "consents" else _list_records(client, did, VIDEO_NSIDS)
+    consents = [] if what == "videos" else _list_records(client, did, CONSENT_NSIDS)
     if as_json:
-        dump = lambda rs: [{"uri": r.uri, "cid": str(r.cid), "value": to_dict(r.value)} for r in rs]  # noqa: E731
+        dump = lambda rs: [{"uri": r.uri, "cid": r.cid, "value": r.raw} for r in rs]  # noqa: E731
         click.echo(json.dumps({"videos": dump(videos), "consents": dump(consents)}, indent=2))
         return
     by_video: dict[str, list] = {}
     for r in consents:
-        by_video.setdefault(to_dict(r.value).get("videoUri"), []).append(r)
+        by_video.setdefault(r.view.get("videoUri"), []).append(r)
     for r in videos:
-        v = to_dict(r.value)
+        v = r.view
         ref = v.get("storageRef", {})
         click.secho(_safe(repr(v.get("title"))), bold=True)
         click.echo(f"  video:   {_safe(r.uri)}\n  storage: {_safe(ref.get('kind'))}  {_safe(ref.get('value'))}")
         linked = by_video.pop(r.uri, [])
         if not linked:
             click.secho("  consent: none", fg="yellow")
+        if r.nsid == VIDEO_NSID:
+            click.echo("  format:  version 1 (org.consentvid.video)")
         for c in linked:
-            cv = to_dict(c.value)
+            cv = c.view
             state = " (EXPIRED)" if is_expired(cv) else ""
             if c.uri.rsplit("/", 1)[-1] != r.uri.rsplit("/", 1)[-1]:
                 state += " (ignored: not keyed to its video)"
@@ -1535,24 +1627,27 @@ def _show_revoke_plan(video: dict, linked: list, delete_bytes: bool) -> None:
         click.echo("  The stored bytes will be deleted too.")
 
 
-def _video_revoke_plan(client: Client, did: str, uri: str, rkey: str):
-    """(repo head CID, video record, [(consent uri, rkey)]) for revoking a
-    video. The head is read first, so any write after it makes the guarded
-    applyWrites fail instead of leaving a consent behind."""
+def _video_revoke_plan(client: Client, did: str, uri: str, rkey: str, video_nsid: str = VIDEO_NSID):
+    """(repo head CID, video view, [(consent uri, rkey)]) for revoking a
+    video of either version (its consents are of the same version). The
+    head is read first, so any write after it makes the guarded applyWrites
+    fail instead of leaving a consent behind."""
+    consent_nsid = CONSENT_FOR_VIDEO[video_nsid]
     head = str(client.com.atproto.sync.get_latest_commit({"did": did}).cid)
-    video = to_dict(client.com.atproto.repo.get_record({"repo": did, "collection": VIDEO_NSID, "rkey": rkey}).value)
+    raw = to_dict(client.com.atproto.repo.get_record({"repo": did, "collection": video_nsid, "rkey": rkey}).value)
+    video = versions.video_view(video_nsid, raw) if isinstance(raw, dict) else {}
     linked: dict[str, str] = {}
     # The sidecar (same record key), whatever its videoUri says: readers
     # ignore a mismatched one, but it would stay public as an orphan.
-    if _get_record_or_none(client, did, CONSENT_NSID, rkey) is not None:
-        linked[rkey] = f"at://{did}/{CONSENT_NSID}/{rkey}"
+    if _get_record_or_none(client, did, consent_nsid, rkey) is not None:
+        linked[rkey] = f"at://{did}/{consent_nsid}/{rkey}"
     # Legacy consents keyed otherwise.
-    for r in _list_all(client, did, CONSENT_NSID):
+    for r in _list_records(client, did, (consent_nsid,)):
         try:
-            cat = parse_at_uri(r.uri, CONSENT_NSID)
+            cat = parse_at_uri(r.uri, consent_nsid)
         except ValueError:
             continue
-        if cat.did == did and to_dict(r.value).get("videoUri") == uri:
+        if cat.did == did and r.view.get("videoUri") == uri:
             linked.setdefault(cat.rkey, r.uri)
     return head, video, [(u, k) for k, u in linked.items()]
 
@@ -1577,9 +1672,9 @@ def revoke(uri, delete_bytes, all_for_video, yes):
         at = parse_at_uri(uri)
     except ValueError as e:
         raise click.BadParameter(str(e), param_hint="URI") from None
-    if at.collection not in (VIDEO_NSID, CONSENT_NSID):
+    if at.collection not in RECORD_NSIDS:
         raise ConsentVidError(f"not a ConsentVid record: {at.collection}")
-    if at.collection == CONSENT_NSID and delete_bytes:
+    if at.collection in CONSENT_NSIDS and delete_bytes:
         raise click.UsageError("--delete-bytes applies when revoking a video URI")
     if all_for_video:
         _warn("--all is deprecated and has no effect: a video has at most one consent")
@@ -1588,10 +1683,10 @@ def revoke(uri, delete_bytes, all_for_video, yes):
     if at.did != did:
         raise ConsentVidError(f"not your record (it belongs to {at.did})")
 
-    if at.collection == CONSENT_NSID:
+    if at.collection in CONSENT_NSIDS:
         if not yes:
             click.confirm(f"Withdraw consent {uri}?", abort=True)
-        client.com.atproto.repo.delete_record({"repo": did, "collection": CONSENT_NSID, "rkey": at.rkey})
+        client.com.atproto.repo.delete_record({"repo": did, "collection": at.collection, "rkey": at.rkey})
         click.secho(f"Withdrawn: {uri}", fg="green")
         return
 
@@ -1601,20 +1696,20 @@ def revoke(uri, delete_bytes, all_for_video, yes):
     # (the consents and the video version), and the commit re-reads the head
     # right before it is sent, retrying a few times without asking again
     # unless what would be deleted changed (R3-05).
-    _, video, linked = _video_revoke_plan(client, did, uri, at.rkey)
+    _, video, linked = _video_revoke_plan(client, did, uri, at.rkey, at.collection)
     _show_revoke_plan(video, linked, delete_bytes)
     if not yes:
         click.confirm("Proceed?", abort=True)
     confirmed = _revoke_fingerprint(video, linked)
     for attempt in range(1, _REVOKE_ATTEMPTS + 1):
-        head, video, linked = _video_revoke_plan(client, did, uri, at.rkey)
+        head, video, linked = _video_revoke_plan(client, did, uri, at.rkey, at.collection)
         if _revoke_fingerprint(video, linked) != confirmed:
             _warn("what this revoke deletes changed since you confirmed it")
             _show_revoke_plan(video, linked, delete_bytes)
             if not yes:
                 click.confirm("Proceed?", abort=True)
             confirmed = _revoke_fingerprint(video, linked)
-        targets = [(CONSENT_NSID, rkey) for _, rkey in linked] + [(VIDEO_NSID, at.rkey)]
+        targets = [(CONSENT_FOR_VIDEO[at.collection], rkey) for _, rkey in linked] + [(at.collection, at.rkey)]
         try:
             _delete_in_one_commit(client, did, targets, swap_commit=head)
             break
@@ -1660,6 +1755,17 @@ def _own_did() -> str:
     return get_client().me.did
 
 
+def _both_spellings(values) -> tuple:
+    """The internal values plus their V2 (kebab-case) spellings."""
+    return tuple(dict.fromkeys([*values, *(versions.camel_to_kebab(v) for v in values)]))
+
+
+def _camel_values(ctx, param, value):
+    """Filters take either spelling of a value (V2 'open-weights' or
+    'openWeights'); records are compared in the internal (camelCase) one."""
+    return tuple(versions.kebab_to_camel(v) for v in value)
+
+
 def _filter_options(f):
     for opt in reversed(
         [
@@ -1668,14 +1774,16 @@ def _filter_options(f):
                 "purposes",
                 multiple=True,
                 type=click.Choice(PURPOSES),
+                callback=_camel_values,
                 help="Require this purpose. Repeatable (all required).",
             ),
             click.option(
                 "--model-class",
                 "model_classes",
                 multiple=True,
-                type=click.Choice(MODEL_CLASSES),
-                help="Require this model class. Repeatable (all required).",
+                type=click.Choice(_both_spellings(MODEL_CLASSES)),
+                callback=_camel_values,
+                help="Require this model class (open-weights or openWeights). Repeatable (all required).",
             ),
             click.option(
                 "--modality",
@@ -1690,6 +1798,15 @@ def _filter_options(f):
     return f
 
 
+def _include_labeled_option(f):
+    return click.option(
+        "--include-labeled",
+        is_flag=True,
+        help="Keep clips the contributor self-labeled porn, sexual, nudity or graphic-media "
+        "(left out by default).",
+    )(f)
+
+
 @main.command()
 @click.argument("output_path", type=click.Path(dir_okay=False, path_type=Path))
 @click.option(
@@ -1697,43 +1814,59 @@ def _filter_options(f):
 )
 @_filter_options
 @click.option("--tag", "tags", multiple=True, help="Only videos with any of these tags.")
+@_include_labeled_option
 @click.option("--name", default=None, help="Dataset name.")
 @click.option("--description", default=None)
-def export(output_path, repo, purposes, model_classes, modalities, tags, name, description):
-    """Write a Croissant-RAI manifest of one contributor's consented clips."""
+def export(output_path, repo, purposes, model_classes, modalities, tags, include_labeled, name, description):
+    """Write a Croissant-RAI manifest of one contributor's consented clips
+    (both record versions)."""
+    from consentvid import signals
     from consentvid.croissant import Clip, build_manifest
     from consentvid.identity import display_name, public_client, resolve_did
     from consentvid.policy import covers
 
     did = resolve_did(repo) if repo else _own_did()
     client = public_client(did)
-    videos = {r.uri: (str(r.cid), to_dict(r.value)) for r in _list_all(client, did, VIDEO_NSID)}
+    try:
+        account = signals.account_signals(did)
+    except Exception as e:  # noqa: BLE001 — fail closed
+        raise ConsentVidError(
+            f"could not check the contributor's bot label and AI-usage preferences ({type(e).__name__}: {_safe(e)})"
+        ) from e
+    if account.bot:
+        raise ConsentVidError(f"{_safe(did)} labels itself a bot account: bots cannot give consent")
+    videos = {r.uri: r for r in _list_records(client, did, VIDEO_NSIDS)}
     # Each video's consent is its sidecar: the consent with the video's own
-    # record key. Any other consent is ignored.
-    best, cids = {}, {}
-    for r in _list_all(client, did, CONSENT_NSID):
-        c = to_dict(r.value)
-        if not isinstance(c, dict) or not isinstance(c.get("videoUri"), str):
+    # record key, of the same record version. Any other consent is ignored.
+    best: dict[str, tuple[str, dict]] = {}
+    cids: dict[str, str] = {}
+    for r in _list_records(client, did, CONSENT_NSIDS):
+        c = r.view
+        if not isinstance(c.get("videoUri"), str):
             _warn(f"skipping malformed consent {_safe(r.uri)}")
             continue
         try:
-            cat = parse_at_uri(r.uri, CONSENT_NSID)
-            vat = parse_at_uri(c["videoUri"], VIDEO_NSID)
+            cat = parse_at_uri(r.uri, r.nsid)
+            vat = parse_at_uri(c["videoUri"], VIDEO_FOR_CONSENT[r.nsid])
         except ValueError as e:
             _warn(f"skipping consent {_safe(r.uri)}: {_safe(e)}")
             continue
         if cat.did != did or vat.rkey != cat.rkey:
             _warn(f"ignored consent {_safe(r.uri)}: record key doesn't match its video")
             continue
-        errors = validate_in_repo(CONSENT_NSID, c, did, rkey=cat.rkey)
+        errors = validate_in_repo(r.nsid, r.raw, did, rkey=cat.rkey)
         if errors:
             _warn(f"leaving out {_safe(c['videoUri'])}: its consent {_safe(r.uri)} is invalid ({_safe(errors[0])})")
             continue
         if is_expired(c):
             _warn(f"skipping expired consent {_safe(r.uri)}")
             continue
+        conflict = account.conflicts(c)
+        if conflict:
+            _warn(f"leaving out {_safe(c['videoUri'])}: {_safe(conflict)}")
+            continue
         best[c["videoUri"]] = (r.uri, c)
-        cids[r.uri] = str(r.cid)
+        cids[r.uri] = r.cid
 
     handle = display_name(did)
     clips = []
@@ -1741,8 +1874,9 @@ def export(output_path, repo, purposes, model_classes, modalities, tags, name, d
         if vuri not in videos:
             _warn(f"consent {_safe(curi)} references missing video {_safe(vuri)}")
             continue
-        vcid, v = videos[vuri]
-        if validate_in_repo(VIDEO_NSID, v, did, rkey=parse_at_uri(vuri).rkey):
+        vr = videos[vuri]
+        vcid, v = vr.cid, vr.view
+        if validate_in_repo(vr.nsid, vr.raw, did, rkey=vr.rkey):
             _warn(f"skipping {_safe(curi)}: its video record is invalid")
             continue
         if c["videoCid"] != vcid:  # validate_in_repo requires videoCid
@@ -1751,6 +1885,10 @@ def export(output_path, repo, purposes, model_classes, modalities, tags, name, d
         if not covers(c, purposes=purposes, model_classes=model_classes, modalities=modalities):
             continue
         if tags and not set(tags) & set(v.get("tags") or []):
+            continue
+        sensitive = set(v.get("labels") or []) & set(SENSITIVE_SELF_LABELS)
+        if sensitive and not include_labeled:
+            _warn(f"left out {_safe(vuri)}: self-labeled {', '.join(sorted(sensitive))} (--include-labeled keeps it)")
             continue
         clips.append(Clip(curi, cids[curi], c, vuri, vcid, v, did, handle))
 
@@ -1782,14 +1920,18 @@ def verify(uri, as_json, no_relay_status):
     Checks the commit signature against the DID's key and the Merkle proof of
     the record's presence or absence, then validates the record.
     """
+    from consentvid.resync import stale_against, witness_rev_of
     from consentvid.verify import fetch_verified
 
     try:
         at = parse_at_uri(uri)
     except ValueError as e:
         raise click.BadParameter(str(e), param_hint="URI") from None
+    # The relay's witness first (see resync: STALE), then the PDS.
+    witnessed = None if no_relay_status else witness_rev_of(at.did)
     rec = fetch_verified(at)
     errors = validate_in_repo(at.collection, rec.value, at.did, rkey=at.rkey) if rec.present else []
+    stale = stale_against(witnessed, rec)
     relay = relay_lag = None
     if rec.present and not no_relay_status:
         from consentvid.appview import is_operational
@@ -1812,6 +1954,8 @@ def verify(uri, as_json, no_relay_status):
                     "errors": errors,
                     "relayStatus": relay,
                     "relayProcessingStatus": relay_lag,
+                    "relayWitnessedRev": witnessed,
+                    "stale": stale,
                     "value": rec.value,
                 },
                 indent=2,
@@ -1820,17 +1964,25 @@ def verify(uri, as_json, no_relay_status):
     elif not rec.present:
         how = "proven absent by a signed repo commit" if rec.proven else "reported absent by the PDS"
         click.secho(f"ABSENT — {how} (rev {_safe(rec.rev or '?')})", fg="red")
+        if stale:
+            click.secho(f"  STALE: the relay has seen rev {_safe(witnessed)}; the PDS may be rolled back", fg="red")
     else:
         click.secho("PRESENT — signature and Merkle proof verified", fg="green")
         click.echo(f"  cid: {_safe(rec.cid)}\n  rev: {_safe(rec.rev)}")
         if errors:
             click.secho("  INVALID: " + "; ".join(_safe(e) for e in errors), fg="red")
+        if stale:
+            click.secho(
+                f"  STALE: the relay has seen rev {_safe(witnessed)}, newer than this commit: "
+                "the PDS served a rolled-back or stale repo",
+                fg="red",
+            )
         if relay:
             click.secho(f"  UNAVAILABLE: the relay reports the account {_safe(relay)}", fg="red")
         elif relay_lag:
             click.secho(f"  note: relay reports {_safe(relay_lag)}; live indexes may be stale", fg="yellow")
         click.echo(json.dumps(rec.value, indent=2, default=str))
-    if not rec.present or errors or relay:
+    if not rec.present or errors or relay or stale:
         sys.exit(1)
 
 
@@ -1843,6 +1995,10 @@ _MARK = {
     "unattested": ("UNATTEST", "red"),
     "unavailable": ("UNAVAIL", "red"),
     "unbound": ("UNBOUND", "red"),
+    "bot-account": ("BOT", "red"),
+    "conflicting-preference": ("PREF", "red"),
+    "labeled": ("LABELED", "red"),
+    "stale": ("STALE", "red"),
     "unknown": ("?", "yellow"),
 }
 
@@ -1872,6 +2028,7 @@ _MARK = {
 @click.option("--check", is_flag=True, help="Exit with status 1 if any clip must be dropped.")
 @click.option("--json", "as_json", is_flag=True)
 @click.option("--workers", default=8, show_default=True, help="Parallel checks.")
+@_include_labeled_option
 @click.option(
     "--no-relay-status",
     "no_relay_status",
@@ -1879,7 +2036,7 @@ _MARK = {
     help="Don't ask the relay (getRepoStatus) whether the contributor's account is active, e.g. "
     "offline. By default a relay-level takedown makes a clip unavailable.",
 )
-def resync(input_path, write_path, min_provenance, strict, check, as_json, workers, no_relay_status):
+def resync(input_path, write_path, min_provenance, strict, check, as_json, workers, include_labeled, no_relay_status):
     """Verify that every clip's consent still stands, before you use a dataset.
 
     INPUT_PATH is a Croissant manifest or a C2PA-stamped video file. Each
@@ -1920,7 +2077,11 @@ def resync(input_path, write_path, min_provenance, strict, check, as_json, worke
         raise ConsentVidError("no clips with consent receipts found")
 
     results = rs.check_all(
-        items, min_provenance=min_provenance, workers=workers, relay_status=not no_relay_status
+        items,
+        min_provenance=min_provenance,
+        workers=workers,
+        relay_status=not no_relay_status,
+        include_labeled=include_labeled,
     )
     drop_statuses = rs.DROP_STATUSES + ((rs.UNKNOWN,) if strict else ())
     n_drop = sum(r.status in drop_statuses for r in results)
@@ -1974,33 +2135,37 @@ def embed_c2pa(video_path, consent_uri, output_path):
     """
     from consentvid import c2pa_embed as ce
     from consentvid.identity import verified_handle
+    from consentvid.resync import parse_consent_uri
     from consentvid.verify import fetch_verified
 
     try:
-        consent_at = parse_at_uri(consent_uri, CONSENT_NSID)
+        consent_at = parse_consent_uri(consent_uri)
     except ValueError as e:
         raise click.BadParameter(str(e), param_hint="--consent") from None
     consent = fetch_verified(consent_at)
     if not consent.present:
         raise ConsentVidError(f"{consent_uri} does not exist (withdrawn?)")
-    errors = validate_in_repo(CONSENT_NSID, consent.value, consent_at.did, rkey=consent_at.rkey)
+    errors = validate_in_repo(consent_at.collection, consent.value, consent_at.did, rkey=consent_at.rkey)
     if errors:
         raise ConsentVidError(f"consent is invalid: {errors[0]}")
-    video_uri = consent.value["videoUri"]
-    video_at = parse_at_uri(video_uri, VIDEO_NSID)
+    c = versions.consent_view(consent_at.collection, consent.value)
+    video_uri = c["videoUri"]
+    video_nsid = VIDEO_FOR_CONSENT[consent_at.collection]
+    video_at = parse_at_uri(video_uri, video_nsid)
     video = fetch_verified(video_at)
     if not video.present:
         raise ConsentVidError(f"the consent's video {video_uri} no longer exists")
-    errors = validate_in_repo(VIDEO_NSID, video.value, video_at.did, rkey=video_at.rkey)
+    errors = validate_in_repo(video_nsid, video.value, video_at.did, rkey=video_at.rkey)
     if errors:
         raise ConsentVidError(f"the consent's video record is invalid: {errors[0]}")
-    if consent.value["videoCid"] != video.cid:  # validate_in_repo requires videoCid
+    v = versions.video_view(video_nsid, video.value)
+    if c["videoCid"] != video.cid:  # validate_in_repo requires videoCid
         raise ConsentVidError("the video record changed after consent was given; consent no longer applies")
     actual = hash_file(video_path)
-    if actual != video.value.get("contentHash"):
+    if actual != v.get("contentHash"):
         raise ConsentVidError(
             f"{video_path.name} is not the registered video\n"
-            f"  file:   {actual}\n  record: {video.value.get('contentHash')}"
+            f"  file:   {actual}\n  record: {v.get('contentHash')}"
         )
     output_path = output_path or video_path.with_suffix(f".c2pa{video_path.suffix}")
     out = ce.embed_consent(
@@ -2008,10 +2173,10 @@ def embed_c2pa(video_path, consent_uri, output_path):
         out_path=output_path,
         consent_uri=consent_uri,
         consent_cid=consent.cid,
-        consent=consent.value,
+        consent=c,
         video_uri=video_uri,
         video_cid=video.cid,
-        video=video.value,
+        video=v,
         contributor_handle=_verified_handle(consent_at.did, lambda d: verified_handle(d, raise_errors=True)),
         contributor_did=consent_at.did,
     )
@@ -2359,7 +2524,7 @@ def appview_backfill(repos, all_repos, pending, relay):
     targets: list[str] = list(repos)
     if all_repos:
         listed: list[str] = []
-        for nsid in (VIDEO_NSID, CONSENT_NSID):
+        for nsid in RECORD_NSIDS:
             listed += av.list_repos_by_collection(relay, nsid)
         known = av.known_dids(conn)
         click.echo(f"Relay lists {len(set(listed))} repo(s); the index knows {len(known)}.")
@@ -2482,33 +2647,38 @@ def _backfill_repo(conn, repo: str, relay: str | None = None) -> tuple[str, int,
         return _record_inactive_repo(conn, did, status[1], started)
     relay_lag = _relay_lag(answers)
     client = public_client(did)
-    listings = {collection: _list_all(client, did, collection) for collection in (VIDEO_NSID, CONSENT_NSID)}
+    listings = {collection: _list_all(client, did, collection) for collection in RECORD_NSIDS}
+    # Account signals (bot self-label, AI-usage preferences), read with
+    # proofs; a failure fails the backfill, which is retried (fail closed:
+    # the account's consents stay hidden until it succeeds).
+    from consentvid import signals
+
+    account = signals.account_signals(did, fresh=True)
     stored = invalid = skipped = 0
     # Take the write lock, then see what changed while we were listing.
     if conn.in_transaction:
         conn.commit()
     conn.execute("BEGIN IMMEDIATE")
-    touched = {
-        CONSENT_NSID: {
-            row["uri"]
-            for row in conn.execute(
-                "SELECT uri FROM consents WHERE did = ? AND "
-                "max(indexed_at, COALESCE(revoked_at, ''), COALESCE(invalid_at, '')) >= ? "
-                # A delete seen live for a consent the index never had (R1-07).
-                "UNION SELECT uri FROM consent_tombstones WHERE did = ? AND deleted_at >= ?",
-                (did, started, did, started),
-            )
-        },
-        VIDEO_NSID: {
-            row["uri"]
-            for row in conn.execute(
-                "SELECT uri FROM videos WHERE did = ? AND indexed_at >= ? "
-                "UNION SELECT uri FROM video_tombstones WHERE did = ? AND deleted_at >= ?",
-                (did, started, did, started),
-            )
-        },
+    touched_consents = {
+        row["uri"]
+        for row in conn.execute(
+            "SELECT uri FROM consents WHERE did = ? AND "
+            "max(indexed_at, COALESCE(revoked_at, ''), COALESCE(invalid_at, '')) >= ? "
+            # A delete seen live for a consent the index never had (R1-07).
+            "UNION SELECT uri FROM consent_tombstones WHERE did = ? AND deleted_at >= ?",
+            (did, started, did, started),
+        )
     }
-    for collection in (VIDEO_NSID, CONSENT_NSID):
+    touched_videos = {
+        row["uri"]
+        for row in conn.execute(
+            "SELECT uri FROM videos WHERE did = ? AND indexed_at >= ? "
+            "UNION SELECT uri FROM video_tombstones WHERE did = ? AND deleted_at >= ?",
+            (did, started, did, started),
+        )
+    }
+    touched = {c: (touched_consents if c in CONSENT_NSIDS else touched_videos) for c in RECORD_NSIDS}
+    for collection in RECORD_NSIDS:
         live = set()
         for r in listings[collection]:
             # listRecords comes from the contributor's PDS (untrusted): only
@@ -2543,17 +2713,19 @@ def _backfill_repo(conn, repo: str, relay: str | None = None) -> tuple[str, int,
                 stored += 1
         # Anything indexed earlier that's gone now was deleted while we
         # weren't watching.
-        table = "videos" if collection == VIDEO_NSID else "consents"
+        table = "consents" if collection in CONSENT_NSIDS else "videos"
+        prefix = f"at://{did}/{collection}/"
         gone = [
             row["uri"]
             for row in conn.execute(f"SELECT uri FROM {table} WHERE did = ?", (did,)).fetchall()
-            if row["uri"] not in live and row["uri"] not in touched[collection]
+            if row["uri"].startswith(prefix) and row["uri"] not in live and row["uri"] not in touched[collection]
         ]
         for uri in gone:
-            if collection == VIDEO_NSID:
+            if collection in VIDEO_NSIDS:
                 av.delete_video(conn, uri)
             else:
                 av.delete_consent(conn, uri)
+    av.set_account_signals(conn, did, account.bot, account.training_denied, started)
     # Hosting status from the PDS and the relay (getRepoStatus), never a
     # blind "active": a takedown seen live must not be undone (R1-10).
     acct = conn.execute("SELECT updated_at FROM accounts WHERE did = ?", (did,)).fetchone()
@@ -2712,10 +2884,12 @@ def appview_revocations(since, as_json):
 @click.option("--repo", default=None, help="Only this contributor (handle or DID).")
 @click.option("--include-revoked", is_flag=True, help="Also show withdrawn/inactive consents.")
 @click.option("--include-expired", is_flag=True)
+@_include_labeled_option
 @click.option("--limit", default=20, show_default=True)
 @click.option("--json", "as_json", is_flag=True)
 def appview_query(
-    purposes, model_classes, modalities, provenance, repo, include_revoked, include_expired, limit, as_json
+    purposes, model_classes, modalities, provenance, repo, include_revoked, include_expired, include_labeled,
+    limit, as_json,
 ):
     """Find consented clips across contributors."""
     from consentvid import appview as av
@@ -2730,6 +2904,7 @@ def appview_query(
         did=resolve_did(repo) if repo else None,
         include_revoked=include_revoked,
         include_expired=include_expired,
+        include_labeled=include_labeled,
         limit=limit,
     )
     if as_json:
@@ -2765,9 +2940,10 @@ def appview_query(
     callback=_refuse_attested,
     help="'attested' is refused: it is self-declared and nothing verifies it yet.",
 )
+@_include_labeled_option
 @click.option("--name", default=None, help="Dataset name.")
 @click.option("--description", default=None)
-def appview_export(output_path, purposes, model_classes, modalities, provenance, name, description):
+def appview_export(output_path, purposes, model_classes, modalities, provenance, include_labeled, name, description):
     """Build a multi-contributor Croissant-RAI manifest from the index.
 
     Run `consentvid resync` on the result before use: the index is fed by an
@@ -2783,6 +2959,7 @@ def appview_export(output_path, purposes, model_classes, modalities, provenance,
         model_classes=model_classes,
         modalities=modalities,
         provenance=provenance,
+        include_labeled=include_labeled,
         limit=None,
     )
     clips, missing = [], 0
@@ -2791,12 +2968,16 @@ def appview_export(output_path, purposes, model_classes, modalities, provenance,
             missing += 1
             continue
         try:
-            consent, video = json.loads(r["record"]), json.loads(r["video_record"])
+            raw_consent, raw_video = json.loads(r["record"]), json.loads(r["video_record"])
+            consent_nsid = parse_at_uri(r["uri"]).collection
+            video_at = parse_at_uri(r["video_uri"], VIDEO_FOR_CONSENT[consent_nsid])
             # Re-validate: the index may predate today's rules.
-            if validate_in_repo(CONSENT_NSID, consent, r["did"], rkey=r["rkey"]) or validate_in_repo(
-                VIDEO_NSID, video, r["did"], rkey=parse_at_uri(r["video_uri"]).rkey
+            if validate_in_repo(consent_nsid, raw_consent, r["did"], rkey=r["rkey"]) or validate_in_repo(
+                video_at.collection, raw_video, r["did"], rkey=video_at.rkey
             ):
                 raise ValueError("no longer valid")
+            consent = versions.consent_view(consent_nsid, raw_consent)
+            video = versions.video_view(video_at.collection, raw_video)
         except Exception as e:  # noqa: BLE001 — one bad row must not abort the export
             _warn(f"skipping indexed consent {_safe(r['uri'])}: {type(e).__name__}: {_safe(e)}")
             continue

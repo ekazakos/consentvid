@@ -18,6 +18,8 @@ dependencies = [
     # GHSA-6q48-6c7w-9gw2 (compromised emSign intermediates) fixed in 2026.10.18.
     "certifi>=2026.10.18",
     "urllib3>=2.8",
+    # Grapheme clusters (\X) for the lexicons' maxGraphemes limits.
+    "regex>=2024.11.6",
 ]
 
 [project.optional-dependencies]

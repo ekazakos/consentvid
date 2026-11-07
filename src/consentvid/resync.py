@@ -37,6 +37,25 @@ an inactive account status from the relay turns UNKNOWN into UNAVAILABLE
 (never REVOKED). ``relay_status=False`` (CLI ``--no-relay-status``) skips
 the relay for offline use.
 
+Both record versions are read (org.consentvid.video/consent and
+videoV2/consentV2); a consent only ever binds a video of its own version.
+
+Account signals (consentvid.signals): a consent from an account that
+labels itself a bot is BOT_ACCOUNT, and one granting 'training' while the
+same account's community.lexicon.preference.ai denies training is
+CONFLICTING_PREFERENCE. Both are dropped; a failed lookup is UNKNOWN.
+
+Self-labels: a V2 video carrying a sensitive self-label (porn, sexual,
+nudity, graphic-media) is LABELED and dropped, unless ``include_labeled``.
+
+Rollback witness: before reading a repo, the relay's
+com.atproto.sync.getLatestCommit names the newest revision it has seen. A
+PDS whose signed commit is older than that served a rolled-back (or stale)
+repo, which could resurrect a withdrawn consent: STALE, dropped. The relay
+is asked first, so a commit made between the two reads can't cause a false
+alarm. A relay that can't answer only adds a note. Separately, verify
+refuses commits whose rev is more than five minutes in the future.
+
 No login is needed: everything read here is public.
 """
 
@@ -61,18 +80,20 @@ from consentvid.croissant import (
 )
 from consentvid.errors import ConsentVidError, RepoUnavailable, VerificationError
 from consentvid.records import (
-    CONSENT_NSID,
-    VIDEO_NSID,
+    CONSENT_NSIDS,
+    VIDEO_FOR_CONSENT,
     check_public_host,
     is_expired,
     is_ipfs_cid,
+    is_tid,
     normalize_dt,
     parse_at_uri,
 )
 from consentvid.storage import public_url
 from consentvid.validate import validate_in_repo
 from consentvid.verify import fetch_verified
-from consentvid.vocab import PROVENANCE_ORDER
+from consentvid.versions import consent_view, video_view
+from consentvid.vocab import PROVENANCE_ORDER, SENSITIVE_SELF_LABELS
 
 VALID = "valid"
 REVOKED = "revoked"  # consent or video deleted / account deleted
@@ -83,9 +104,19 @@ UNATTESTED = "unattested"  # below the requested provenance bar
 UNAVAILABLE = "unavailable"  # account deactivated / taken down / suspended
 UNBOUND = "unbound"  # consent stands, but this file isn't bound to it (C2PA input)
 UNKNOWN = "unknown"  # network error: couldn't check
+BOT_ACCOUNT = "bot-account"  # the account labels itself a bot
+CONFLICTING_PREFERENCE = "conflicting-preference"  # its AI-usage preference denies training
+LABELED = "labeled"  # the video carries a sensitive self-label
+STALE = "stale"  # the PDS served an older repo revision than the relay has seen
 
-STATUSES = (VALID, REVOKED, EXPIRED, MODIFIED, INVALID, UNATTESTED, UNAVAILABLE, UNBOUND, UNKNOWN)
-DROP_STATUSES = (REVOKED, EXPIRED, MODIFIED, INVALID, UNATTESTED, UNAVAILABLE, UNBOUND)
+STATUSES = (
+    VALID, REVOKED, EXPIRED, MODIFIED, INVALID, UNATTESTED, UNAVAILABLE, UNBOUND,
+    BOT_ACCOUNT, CONFLICTING_PREFERENCE, LABELED, STALE, UNKNOWN,
+)
+DROP_STATUSES = (
+    REVOKED, EXPIRED, MODIFIED, INVALID, UNATTESTED, UNAVAILABLE, UNBOUND,
+    BOT_ACCOUNT, CONFLICTING_PREFERENCE, LABELED, STALE,
+)
 
 
 # Receipt fields that grant permissions. Always compared with the verified
@@ -376,15 +407,23 @@ def _entry_problem(fo, duplicate_ids: set) -> str | None:
 def _canonical_ids(fo: dict, receipt: dict) -> set[str]:
     """The @id spellings the exporter would have written for this entry."""
     try:
-        did = parse_at_uri(receipt.get("atUri"), CONSENT_NSID).did
+        consent_at = parse_consent_uri(receipt.get("atUri"))
         video_uri = fo.get("cv:atUri", fo.get("cr:atUri"))
-        rkey = parse_at_uri(video_uri, VIDEO_NSID).rkey
+        did, rkey = consent_at.did, parse_at_uri(video_uri, VIDEO_FOR_CONSENT[consent_at.collection]).rkey
     except (ValueError, TypeError):
         return set()
     ids = {f"{did}/{rkey}"}
     if "cr:atUri" in fo:  # pre-cv: exporter (3fc54ea..533c2a3)
         ids.add(f"video-{rkey}")
     return ids
+
+
+def parse_consent_uri(uri):
+    """Parse the AT-URI of a consent of either version. Raises ValueError."""
+    at = parse_at_uri(uri if isinstance(uri, str) else "")
+    if at.collection not in CONSENT_NSIDS:
+        raise ValueError(f"expected a {' or '.join(CONSENT_NSIDS)} record, got {at.collection}: {uri}")
+    return at
 
 
 def items_from_manifest(manifest: dict) -> list[Item]:
@@ -646,6 +685,52 @@ def clear_relay_cache() -> None:
         _relay_cache.clear()
 
 
+def _witness_lookup_impl(did: str) -> str | None:
+    """The newest repo rev the relay has seen for ``did``
+    (com.atproto.sync.getLatestCommit), or None if it can't say."""
+    from consentvid.appview import relay_latest_rev
+
+    try:
+        return relay_latest_rev(_relay_url(), did)
+    except Exception:  # noqa: BLE001 — no witness: only a note
+        return None
+
+
+_witness_lookup = _witness_lookup_impl  # tests replace this (offline by default)
+_witness_cache: dict[str, tuple[float, str | None]] = {}
+
+
+def witness_rev_of(did: str) -> str | None:
+    """The relay's witnessed rev for ``did``, cached per IDENTITY_TTL. An
+    older witness is still a valid lower bound (revs only grow), so the
+    cache never causes a false alarm."""
+    import time
+
+    from consentvid.identity import IDENTITY_TTL
+
+    with _relay_guard:
+        lock = _relay_locks.setdefault(f"witness:{did}", threading.Lock())
+    with lock:
+        hit = _witness_cache.get(did)
+        if hit is not None and time.monotonic() - hit[0] <= IDENTITY_TTL:
+            return hit[1]
+        rev = _witness_lookup(did)
+        rev = rev if is_tid(rev) else None
+        _witness_cache[did] = (time.monotonic(), rev)
+        return rev
+
+
+def clear_witness_cache() -> None:
+    with _relay_guard:
+        _witness_cache.clear()
+
+
+def stale_against(witnessed: str | None, record) -> bool:
+    """Is a verified read older than the relay's witnessed revision?"""
+    rev = getattr(record, "rev", None)
+    return bool(getattr(record, "proven", False) and is_tid(rev) and is_tid(witnessed) and rev < witnessed)
+
+
 # ----------------------------------------------------------------- check ---
 
 
@@ -656,9 +741,11 @@ def check(
     min_provenance: str | None = None,
     fetch=fetch_verified,
     relay_status: bool = True,
+    include_labeled: bool = False,
 ) -> Result:
     """Classify one clip. ``relay_status``: also ask the relay whether the
-    account is active (see the module docstring)."""
+    account is active and which revision it has seen (see the module
+    docstring). ``include_labeled``: keep videos with sensitive self-labels."""
     res = Result(item.id, item.name, item.consent_uri, UNKNOWN)
 
     def done(status, reason="", verified=False):
@@ -676,9 +763,11 @@ def check(
     if shape:
         return done(*shape)
     try:
-        consent_at = parse_at_uri(item.consent_uri or "", CONSENT_NSID)
+        consent_at = parse_consent_uri(item.consent_uri or "")
     except ValueError as e:
         return done(INVALID, f"bad consent URI: {e}")
+    consent_nsid = consent_at.collection
+    video_nsid = VIDEO_FOR_CONSENT[consent_nsid]
     if not item.sha256:
         return done(INVALID, "no sha256 for the clip: bytes can't be bound to the consent")
     if item.c2pa_state is None and not item.content_url:
@@ -705,6 +794,11 @@ def check(
         return done(status, reason)
 
     # -- consent ------------------------------------------------------------
+    # The relay's witness is read BEFORE the PDS: a commit made in between
+    # can then only make the PDS newer, never look like a rollback.
+    witnessed = witness_rev_of(consent_at.did) if relay_status else None
+    if relay_status and witnessed is None:
+        notes.append("rollback not checked: the relay named no revision for this repo")
     try:
         consent = fetch(consent_at)
     except RepoUnavailable as e:
@@ -717,6 +811,13 @@ def check(
         return pds_failure("consent", e)
     if not consent.present:
         return done(REVOKED, "consent withdrawn (record deleted)", consent.proven)
+    if stale_against(witnessed, consent):
+        return done(
+            STALE,
+            f"the PDS served repo revision {consent.rev}, older than the {witnessed} the relay has seen "
+            "(rolled back or stale): a withdrawal may be hidden",
+            True,
+        )
     if relay_status:
         from consentvid.appview import is_operational
 
@@ -731,10 +832,10 @@ def check(
                 # 'deleted' too: the PDS still serves the repo, so no
                 # revocation is claimed; the clip just can't be used.
                 return done(UNAVAILABLE, f"relay reports account {answer[1] or 'inactive'}")
-    c = consent.value
-    errors = validate_in_repo(CONSENT_NSID, c, consent_at.did, rkey=consent_at.rkey)
+    errors = validate_in_repo(consent_nsid, consent.value, consent_at.did, rkey=consent_at.rkey)
     if errors:
         return done(INVALID, f"consent invalid: {errors[0]}", True)
+    c = consent_view(consent_nsid, consent.value)
     res.captureProvenance = c.get("captureProvenance")
     res.videoUri = c["videoUri"]
     if item.consent_cid and consent.cid != item.consent_cid:
@@ -748,7 +849,7 @@ def check(
         return done(EXPIRED, f"expired at {c.get('expiresAt')}", True)
 
     # -- video it binds to ----------------------------------------------------
-    video_at = parse_at_uri(c["videoUri"], VIDEO_NSID)
+    video_at = parse_at_uri(c["videoUri"], video_nsid)
     try:
         video = fetch(video_at)
     except RepoUnavailable as e:
@@ -759,10 +860,12 @@ def check(
         return pds_failure("video", e)
     if not video.present:
         return done(REVOKED, "video withdrawn (record deleted)", video.proven)
-    v = video.value
-    errors = validate_in_repo(VIDEO_NSID, v, consent_at.did, rkey=video_at.rkey)
+    if stale_against(witnessed, video):
+        return done(STALE, f"the PDS served repo revision {video.rev}, older than the {witnessed} the relay has seen", True)
+    errors = validate_in_repo(video_nsid, video.value, consent_at.did, rkey=video_at.rkey)
     if errors:
         return done(INVALID, f"video record invalid: {errors[0]}", True)
+    v = video_view(video_nsid, video.value)
     if video.cid != c["videoCid"]:  # validate_in_repo requires videoCid
         return done(MODIFIED, "video record changed after consent was given", True)
     if item.video_cid and video.cid != item.video_cid:
@@ -774,6 +877,22 @@ def check(
         return done(MODIFIED, "contentUrl differs from the signed video record", True)
     if item.storage_kind is not None and item.storage_kind != ref.get("kind"):
         return done(MODIFIED, "manifest's storage kind differs from the signed video record", True)
+
+    # -- self-labels and account signals ------------------------------------
+    sensitive = sorted(set(v.get("labels") or []) & set(SENSITIVE_SELF_LABELS))
+    if sensitive and not include_labeled:
+        return done(LABELED, f"the contributor labeled the video {', '.join(sensitive)}", True)
+    from consentvid import signals
+
+    try:
+        account = signals.account_signals(consent_at.did)
+    except Exception as e:  # noqa: BLE001 — fail closed: unknown, dropped under --strict
+        return done(UNKNOWN, f"couldn't check the account's bot label / AI-usage preferences: {type(e).__name__}: {e}")
+    if account.bot:
+        return done(BOT_ACCOUNT, account.conflicts(c) or "bot account", True)
+    conflict = account.conflicts(c)
+    if conflict:
+        return done(CONFLICTING_PREFERENCE, conflict, True)
 
     # -- provenance bar -------------------------------------------------------
     if min_provenance:

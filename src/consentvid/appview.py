@@ -44,6 +44,29 @@ past the retention floor (HTTP 400 CursorTooOld) or from another archive
 Jetstream clamps to its floor (#info OutdatedCursor). Every such clamp records
 a gap, which ``appview backfill --all`` repairs.
 
+Both record versions are indexed (org.consentvid.video/consent and
+videoV2/consentV2); a consent binds only a video of its own version, so
+queries join them by URI as before.
+
+Account signals (consentvid.signals): accounts carry bot / training_denied
+flags, read with proofs from the contributor's PDS whenever the repo is
+backfilled. Queries leave out consents of bot accounts, and consents
+granting 'training' from accounts whose community.lexicon.preference.ai
+denies it. Fail closed: an account whose signals were never checked is left
+out too, and queued for a re-read (which checks them). The indexer also
+follows the two signal collections (community.lexicon.preference.ai and
+app.bsky.actor.profile) for known contributors: a record that sets a bot
+label or denies training flags the account at once (unverified, but only
+ever in the restrictive direction); any other change queues a verified
+re-read. Videos carrying a sensitive self-label (porn, sexual, nudity,
+graphic-media) are left out unless ``include_labeled``.
+
+Jetstream failover: $CONSENTVID_JETSTREAM_URL may list several instances,
+comma-separated (default: the two public v2 instances, us-east and
+us-west). After repeated connection failures the indexer moves to the next
+one. Seq cursors belong to one instance, so the new one is resumed from the
+stored witnessedAt timestamp (rewound), like any other host change.
+
 Results are ordered by sort_at = min(createdAt, first time we saw the record)
 (Bluesky's rule for untrusted createdAt): a future-dated record sorts as of
 when it was first indexed, so it can't push everyone else past --limit.
@@ -65,8 +88,9 @@ import websockets
 
 from consentvid.paths import secure_dir
 from consentvid.records import (
-    CONSENT_NSID,
-    VIDEO_NSID,
+    CONSENT_NSIDS,
+    RECORD_NSIDS,
+    VIDEO_FOR_CONSENT,
     format_dt,
     is_tid,
     normalize_dt,
@@ -74,12 +98,24 @@ from consentvid.records import (
     parse_at_uri,
     parse_dt,
 )
+from consentvid.signals import AI_PREF_NSID, PROFILE_NSID, _scope, is_bot_profile, training_allow
 from consentvid.validate import validate_in_repo
+from consentvid.versions import consent_view, video_view
+from consentvid.vocab import SENSITIVE_SELF_LABELS
 
-JETSTREAM_URL = os.environ.get(
-    "CONSENTVID_JETSTREAM_URL",
+DEFAULT_JETSTREAMS = (
     "wss://jetstream.us-east.bsky.network/xrpc/network.bsky.jetstream.subscribeEvents",
+    "wss://jetstream.us-west.bsky.network/xrpc/network.bsky.jetstream.subscribeEvents",
 )
+JETSTREAM_URLS = tuple(
+    u.strip() for u in (os.environ.get("CONSENTVID_JETSTREAM_URL") or ",".join(DEFAULT_JETSTREAMS)).split(",") if u.strip()
+) or DEFAULT_JETSTREAMS
+JETSTREAM_URL = JETSTREAM_URLS[0]  # the instance tried first
+# Consecutive failed connections to one instance before moving to the next.
+FAILOVER_AFTER = 2
+# Fail closed: hide consents of accounts whose signals were never checked.
+REQUIRE_SIGNAL_CHECK = True
+SIGNAL_COLLECTIONS = (AI_PREF_NSID, PROFILE_NSID)
 _V2_PREFIX = "network.bsky.jetstream.subscribeEvents#"
 CURSOR_KEY = "jetstream_cursor"  # unix microseconds (witnessedAt / v1 time_us)
 SEQ_KEY = "jetstream_seq"  # Jetstream v2 seq: exact, but only on one instance
@@ -150,6 +186,7 @@ _LATER_COLUMNS = {
         ("record", "TEXT"),
         ("first_seen_at", "TEXT"),  # first time this URI was indexed
         ("sort_at", "TEXT"),  # min(createdAt, first_seen_at): see _sort_at
+        ("self_labels", "TEXT"),  # JSON list of the contributor's self-label values
     ],
     "consents": [
         ("compensation", "TEXT"),
@@ -173,6 +210,15 @@ _LATER_COLUMNS = {
         ("desync_since", "TEXT"),
         # rev of the last #sync applied: a replayed #sync is ignored.
         ("sync_rev", "TEXT"),
+        # Account signals (consentvid.signals): 1 = bot self-label / AI
+        # training denied; signals_at = when they were last read with
+        # proofs (NULL: never, so the account's consents are hidden).
+        ("bot", "INTEGER NOT NULL DEFAULT 0"),
+        ("training_denied", "INTEGER NOT NULL DEFAULT 0"),
+        ("signals_at", "TEXT"),
+        # Last restrictive flag from a live (unverified) event: a verified
+        # read that started before it must not clear it.
+        ("flagged_at", "TEXT"),
     ],
     "pending_backfill": [
         # The indexer re-reads pending repos itself (R3-02): failed attempts
@@ -211,11 +257,25 @@ def connect(path: Path | None = None, *, timeout: float = BUSY_TIMEOUT_S) -> sql
 
 
 def _migrate(conn) -> None:
+    added = set()
     for table, cols in _LATER_COLUMNS.items():
         have = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
         for name, decl in cols:
             if name not in have:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+                added.add((table, name))
+    if ("accounts", "signals_at") in added:
+        # An index from before account signals: every contributor needs a
+        # check before their consents show again (the indexer drains these).
+        for row in conn.execute("SELECT DISTINCT did FROM consents WHERE revoked_at IS NULL").fetchall():
+            queue_backfill(conn, row["did"], "account signals not checked yet")
+    if ("videos", "self_labels") in added:
+        for row in conn.execute("SELECT uri, record FROM videos WHERE record IS NOT NULL").fetchall():
+            try:
+                labels = video_view(parse_at_uri(row["uri"]).collection, json.loads(row["record"])).get("labels")
+            except (ValueError, TypeError, AttributeError):
+                labels = []
+            conn.execute("UPDATE videos SET self_labels = ? WHERE uri = ?", (json.dumps(labels or []), row["uri"]))
     # Normalise legacy timestamps so string comparison == time comparison.
     for table, col in (("consents", "expires_at"), ("consents", "created_at"), ("videos", "created_at")):
         for row in conn.execute(f"SELECT uri, {col} AS v FROM {table} WHERE {col} IS NOT NULL").fetchall():
@@ -258,7 +318,10 @@ def _first_seen(conn, table: str, uri: str, now: str) -> str:
     return row["first_seen_at"] if row is not None and row["first_seen_at"] else now
 
 
-def upsert_video(conn, uri, did, rkey, cid, v: dict) -> None:
+def upsert_video(conn, uri, did, rkey, cid, v: dict, raw: dict | None = None) -> None:
+    """Store a valid video. ``v`` is its internal view (versions.py);
+    ``raw`` the record as published (default: ``v``, i.e. a V1 record)."""
+    raw = v if raw is None else raw
     now = now_iso()
     first_seen = _first_seen(conn, "videos", uri, now)
     created = normalize_dt(v.get("createdAt"))
@@ -268,15 +331,15 @@ def upsert_video(conn, uri, did, rkey, cid, v: dict) -> None:
         """
         INSERT INTO videos (uri, did, rkey, cid, title, description, content_hash, duration_ms,
                             width, height, language, tags, storage_ref, mime_type, created_at,
-                            indexed_at, record, first_seen_at, sort_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            indexed_at, record, first_seen_at, sort_at, self_labels)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(uri) DO UPDATE SET
           cid=excluded.cid, title=excluded.title, description=excluded.description,
           content_hash=excluded.content_hash, duration_ms=excluded.duration_ms,
           width=excluded.width, height=excluded.height, language=excluded.language,
           tags=excluded.tags, storage_ref=excluded.storage_ref, mime_type=excluded.mime_type,
           created_at=excluded.created_at, indexed_at=excluded.indexed_at, record=excluded.record,
-          first_seen_at=excluded.first_seen_at, sort_at=excluded.sort_at
+          first_seen_at=excluded.first_seen_at, sort_at=excluded.sort_at, self_labels=excluded.self_labels
         """,
         (
             uri,
@@ -295,16 +358,20 @@ def upsert_video(conn, uri, did, rkey, cid, v: dict) -> None:
             v.get("mimeType"),
             created or v.get("createdAt"),
             now,
-            json.dumps(v),
+            json.dumps(raw),
             first_seen,
             _sort_at(created, first_seen),
+            json.dumps(v.get("labels") or []),
         ),
     )
 
 
-def upsert_consent(conn, uri, did, rkey, cid, c: dict, *, valid: bool = True) -> None:
-    """Store a consent. ``valid=False`` stores a record that fails validation
-    with no terms at all, so it can never be returned as usable."""
+def upsert_consent(conn, uri, did, rkey, cid, c: dict, *, valid: bool = True, raw: dict | None = None) -> None:
+    """Store a consent. ``c`` is its internal view (versions.py), ``raw``
+    the record as published (default: ``c``, i.e. a V1 record).
+    ``valid=False`` stores a record that fails validation with no terms at
+    all, so it can never be returned as usable."""
+    raw = c if raw is None else raw
     now = now_iso()
     first_seen = _first_seen(conn, "consents", uri, now)
     created = normalize_dt(c.get("createdAt"))
@@ -328,7 +395,7 @@ def upsert_consent(conn, uri, did, rkey, cid, c: dict, *, valid: bool = True) ->
                               THEN consents.invalid_at ELSE excluded.invalid_at END,
               first_seen_at=excluded.first_seen_at, sort_at=excluded.sort_at
             """,
-            (uri, did, rkey, cid, c["videoUri"], created, now, json.dumps(c), now, first_seen, sort_at),
+            (uri, did, rkey, cid, c["videoUri"], created, now, json.dumps(raw), now, first_seen, sort_at),
         )
         return
     conn.execute(
@@ -367,7 +434,7 @@ def upsert_consent(conn, uri, did, rkey, cid, c: dict, *, valid: bool = True) ->
             c.get("captureProvenance"),
             created or c.get("createdAt"),
             now,
-            json.dumps(c),
+            json.dumps(raw),
             first_seen,
             sort_at,
         ),
@@ -540,29 +607,103 @@ def ingest(conn, collection: str, uri: str, did: str, rkey: str, cid: str, value
     invalid consent revokes the row it replaces, and an invalid video is
     removed together with its consents."""
     errors = validate_in_repo(collection, value, did, rkey=rkey)
+    consent = collection in CONSENT_NSIDS
     if not errors:
-        (upsert_video if collection == VIDEO_NSID else upsert_consent)(conn, uri, did, rkey, cid, value)
+        if consent:
+            upsert_consent(conn, uri, did, rkey, cid, consent_view(collection, value), raw=value)
+            _queue_signal_check(conn, did)
+        else:
+            upsert_video(conn, uri, did, rkey, cid, video_view(collection, value), raw=value)
         return []
-    if collection == CONSENT_NSID and _same_repo_video(value, did):
-        upsert_consent(conn, uri, did, rkey, cid, value, valid=False)
+    view = consent_view(collection, value) if consent and isinstance(value, dict) else {}
+    if consent and _same_repo_video(view, did, collection):
+        upsert_consent(conn, uri, did, rkey, cid, view, valid=False, raw=value)
     else:
         invalidate(conn, collection, uri)
     return errors
 
 
-def _same_repo_video(value, did: str) -> bool:
-    if not isinstance(value, dict) or not isinstance(value.get("videoUri"), str):
+def _same_repo_video(view, did: str, collection: str) -> bool:
+    if not isinstance(view, dict) or not isinstance(view.get("videoUri"), str):
         return False
     try:
-        return parse_at_uri(value["videoUri"], VIDEO_NSID).did == did
+        return parse_at_uri(view["videoUri"], VIDEO_FOR_CONSENT[collection]).did == did
     except ValueError:
         return False
+
+
+def _queue_signal_check(conn, did: str) -> None:
+    """A contributor whose account signals were never checked: queue the
+    re-read that checks them (their consents stay hidden until then)."""
+    if not REQUIRE_SIGNAL_CHECK:
+        return
+    row = conn.execute("SELECT signals_at FROM accounts WHERE did = ?", (did,)).fetchone()
+    if row is None or row["signals_at"] is None:
+        if conn.execute("SELECT 1 FROM pending_backfill WHERE did = ?", (did,)).fetchone() is None:
+            queue_backfill(conn, did, "account signals not checked yet")
+
+
+def set_account_signals(conn, did: str, bot: bool, training_denied: bool, checked_at: str | None = None) -> None:
+    """Record the account's signals as read with proofs at ``checked_at``
+    (default now)."""
+    conn.execute(
+        "INSERT INTO accounts (did, active, status, updated_at, bot, training_denied, signals_at) "
+        "VALUES (?, 1, NULL, '', ?, ?, ?) "
+        "ON CONFLICT(did) DO UPDATE SET "
+        # A live flag newer than this read wins until the next read.
+        "bot = CASE WHEN COALESCE(accounts.flagged_at, '') >= excluded.signals_at "
+        "THEN MAX(accounts.bot, excluded.bot) ELSE excluded.bot END, "
+        "training_denied = CASE WHEN COALESCE(accounts.flagged_at, '') >= excluded.signals_at "
+        "THEN MAX(accounts.training_denied, excluded.training_denied) ELSE excluded.training_denied END, "
+        "signals_at = excluded.signals_at",
+        (did, int(bot), int(training_denied), checked_at or now_iso()),
+    )
+
+
+def flag_account(conn, did: str, *, bot: bool = False, training_denied: bool = False) -> None:
+    """Restrictive-only update from an unverified live event: set a flag
+    now, never clear one (a verified re-read does that)."""
+    conn.execute(
+        "INSERT INTO accounts (did, active, status, updated_at, bot, training_denied, flagged_at) "
+        "VALUES (?, 1, NULL, '', ?, ?, ?) "
+        "ON CONFLICT(did) DO UPDATE SET bot = MAX(accounts.bot, excluded.bot), "
+        "training_denied = MAX(accounts.training_denied, excluded.training_denied), "
+        "flagged_at = excluded.flagged_at",
+        (did, int(bot), int(training_denied), now_iso()),
+    )
+
+
+def handle_signal_event(conn, collection: str, did: str, rkey: str, op: str, record) -> tuple[str, str] | None:
+    """A commit to a signal collection (profile / AI preference) by a
+    known contributor: flag restrictive changes at once, and queue a
+    verified re-read for every change."""
+    if not known_did(conn, did):
+        return None
+    if collection == PROFILE_NSID and rkey != "self":
+        return None
+    restrictive = ""
+    if op in ("create", "update") and isinstance(record, dict):
+        if collection == PROFILE_NSID and is_bot_profile(record):
+            flag_account(conn, did, bot=True)
+            restrictive = "bot self-label"
+        elif collection == AI_PREF_NSID and training_allow(record) is False:
+            scope = _scope(record)
+            ours = scope is not None and (
+                (scope[0] == "global" and rkey == "self")
+                or (scope[0] == "collection" and scope[1] in RECORD_NSIDS)
+            )
+            if ours:
+                flag_account(conn, did, training_denied=True)
+                restrictive = "AI training denied"
+    queue_backfill(conn, did, f"{collection} changed")
+    what = f"{restrictive}; hidden until re-read" if restrictive else "re-read queued"
+    return ("signal", f"{did}: {collection} {op} ({what})")
 
 
 def invalidate(conn, collection: str, uri: str) -> None:
     """Make sure the record at ``uri`` is no longer usable (it was rewritten
     into something we can't store)."""
-    if collection == CONSENT_NSID:
+    if collection in CONSENT_NSIDS:
         revoke_consent(conn, uri, "rewritten as an invalid record")
     else:
         delete_video(conn, uri, "video rewritten as an invalid record")
@@ -792,9 +933,11 @@ def handle_event(conn, event: dict) -> tuple[str, str] | None:
     if not isinstance(commit, dict):
         return None
     collection, rkey, op = commit.get("collection"), commit.get("rkey"), commit.get("operation")
-    if collection not in (VIDEO_NSID, CONSENT_NSID) or not (did and rkey and op):
+    if not (did and rkey and op) or not (isinstance(did, str) and isinstance(rkey, str)):
         return None
-    if not (isinstance(did, str) and isinstance(rkey, str)):
+    if collection in SIGNAL_COLLECTIONS:
+        return handle_signal_event(conn, collection, did, rkey, op, commit.get("record"))
+    if collection not in RECORD_NSIDS:
         return None
     try:
         parse_at_uri(f"at://{did}/{collection}/{rkey}")
@@ -809,7 +952,7 @@ def handle_event(conn, event: dict) -> tuple[str, str] | None:
             return ("invalid", f"{uri}: {errors[0]}")
         return (op, uri)
     if op == "delete":
-        if collection == CONSENT_NSID:
+        if collection in CONSENT_NSIDS:
             delete_consent(conn, uri)
         else:
             delete_video(conn, uri)
@@ -831,12 +974,11 @@ def stream_url(base: str | None = None) -> str:
     Jetstream v2, collections= filters only commits; kinds= asks for exactly
     the commit, account and sync events the indexer uses."""
     base = base or JETSTREAM_URL
+    collections = RECORD_NSIDS + SIGNAL_COLLECTIONS
     if _is_v2(base):
-        params = "&".join(
-            [f"collections={c}" for c in (VIDEO_NSID, CONSENT_NSID)] + [f"kinds={k}" for k in STREAM_KINDS]
-        )
+        params = "&".join([f"collections={c}" for c in collections] + [f"kinds={k}" for k in STREAM_KINDS])
     else:  # legacy v1 /subscribe
-        params = "&".join(f"wantedCollections={c}" for c in (VIDEO_NSID, CONSENT_NSID))
+        params = "&".join(f"wantedCollections={c}" for c in collections)
     return f"{base}?{params}"
 
 
@@ -935,16 +1077,37 @@ async def index_loop(
                 pass
 
 
+def jetstream_urls() -> list[str]:
+    """The instances to use, in order. A JETSTREAM_URL set apart from the
+    list (e.g. a test or a private instance) is used alone."""
+    if JETSTREAM_URL not in JETSTREAM_URLS:
+        return [JETSTREAM_URL]
+    return [JETSTREAM_URL] + [u for u in JETSTREAM_URLS if u != JETSTREAM_URL]
+
+
+def _start_index(urls: list[str], stored_host: str | None) -> int:
+    """Start on the instance the stored seq belongs to, if it is listed:
+    its seq resumes exactly; any other start resumes by time."""
+    for i, u in enumerate(urls):
+        if urlsplit(u).hostname == stored_host:
+            return i
+    return 0
+
+
 async def _index_loop(conn, on_event, stop_after, max_backoff) -> int:
     n, backoff = 0, min(1.0, max_backoff)
     too_big_at, too_big_count = None, 0
-    base = JETSTREAM_URL
+    urls = jetstream_urls()
+    which = _start_index(urls, _meta(conn, HOST_KEY))
+    base = urls[which]
     host = urlsplit(base).hostname
+    failures = 0  # consecutive connections to this instance that got no frame
     if _meta(conn, HOST_KEY) not in (None, host):
         # Seqs are per instance: another instance's seq would skip or replay.
         conn.execute("DELETE FROM meta WHERE key IN (?, ?)", (SEQ_KEY, HOST_KEY))
         conn.commit()
     while True:
+        got_frame = False
         url = stream_url(base)
         cursor = _resume_cursor(conn, base, on_event)
         if cursor is not None:
@@ -959,6 +1122,7 @@ async def _index_loop(conn, on_event, stop_after, max_backoff) -> int:
             async with websockets.connect(url, **kwargs) as ws:
                 backoff = 1.0
                 async for raw in ws:
+                    got_frame, failures = True, 0
                     try:
                         obj = json.loads(raw)
                     except (ValueError, RecursionError):
@@ -1061,6 +1225,19 @@ async def _index_loop(conn, on_event, stop_after, max_backoff) -> int:
                         )
             else:
                 too_big_at, too_big_count = None, 0
+            if not got_frame and not _cursor_too_old(e):
+                failures += 1
+            if failures >= FAILOVER_AFTER and len(urls) > 1:
+                # Move to the next instance. Its seqs are unrelated, so the
+                # next connection resumes from the stored timestamp, rewound
+                # (_resume_cursor ignores a seq stored for another host).
+                which, failures = (which + 1) % len(urls), 0
+                base = urls[which]
+                host = urlsplit(base).hostname
+                backoff = min(1.0, max_backoff)
+                if on_event:
+                    on_event("failover", f"switching to Jetstream {host}")
+                continue
             if on_event:
                 on_event("reconnect", f"{type(e).__name__}: {e} (retry in {backoff:.0f}s)")
         await asyncio.sleep(backoff)
@@ -1174,6 +1351,19 @@ def relay_repo_status(relay: str, did: str) -> tuple[bool, str | None]:
     return body["active"], st if isinstance(st, str) else None
 
 
+def relay_latest_rev(relay: str, did: str) -> str | None:
+    """The newest repo rev the relay has seen for ``did``
+    (com.atproto.sync.getLatestCommit), or None if it doesn't know the repo
+    or answers without a TID. Network errors raise."""
+    from consentvid.identity import with_retry
+
+    status, body = with_retry(
+        lambda: _relay_get(relay, "com.atproto.sync.getLatestCommit", {"did": did}), what="getLatestCommit"
+    )
+    rev = body.get("rev") if status == 200 and isinstance(body, dict) else None
+    return rev if is_tid(rev) else None
+
+
 def known_dids(conn) -> set[str]:
     rows = conn.execute(
         "SELECT did FROM consents UNION SELECT did FROM videos UNION SELECT did FROM accounts "
@@ -1277,6 +1467,7 @@ def query_consents(
     did: str | None = None,
     include_revoked=False,
     include_expired=False,
+    include_labeled=False,
     limit: int | None = 50,
 ) -> list[sqlite3.Row]:
     """Consents granting ALL requested purposes/model classes/modalities, joined
@@ -1311,7 +1502,20 @@ def query_consents(
             # and haven't been re-read yet.
             "c.did NOT IN (SELECT did FROM accounts WHERE active = 0 OR desync_since IS NOT NULL)",
             "c.video_cid = v.cid",
+            # Account signals: bots never; training-denying accounts not
+            # for consents that grant training (consentvid.signals).
+            "c.did NOT IN (SELECT did FROM accounts WHERE bot = 1)",
+            "NOT (c.did IN (SELECT did FROM accounts WHERE training_denied = 1) "
+            "AND EXISTS (SELECT 1 FROM json_each(c.purposes) p WHERE p.value = 'training'))",
         ]
+        if REQUIRE_SIGNAL_CHECK:
+            where.append("c.did IN (SELECT did FROM accounts WHERE signals_at IS NOT NULL)")
+    if not include_labeled:
+        where.append(
+            f"NOT EXISTS (SELECT 1 FROM json_each(COALESCE(v.self_labels, '[]')) l "
+            f"WHERE l.value IN ({','.join('?' * len(SENSITIVE_SELF_LABELS))}))"
+        )
+        args.extend(SENSITIVE_SELF_LABELS)
     if not include_expired:
         where.append("(c.expires_at IS NULL OR c.expires_at > ?)")
         args.append(now_iso())

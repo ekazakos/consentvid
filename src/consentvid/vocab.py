@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from consentvid.lexicons import load_lexicon
-from consentvid.records import CONSENT_NSID, VIDEO_NSID
+from consentvid.records import CONSENT_NSID, CONSENT_V2_NSID, VIDEO_NSID
 
 _consent = load_lexicon(CONSENT_NSID)["defs"]["main"]["record"]["properties"]
 _video = load_lexicon(VIDEO_NSID)["defs"]
@@ -16,6 +16,16 @@ RIGHTS_BASIS = tuple(_consent["rightsBasis"]["knownValues"])
 CAPTURE_PROVENANCE = tuple(_consent["captureProvenance"]["knownValues"])
 PEOPLE_PRESENT = tuple(_consent["peoplePresent"]["knownValues"])
 STORAGE_KINDS = tuple(_video["storageRef"]["properties"]["kind"]["knownValues"])
+
+# V2 (org.consentvid.consentV2) spells the same vocabulary in kebab-case
+# (versions.camel_to_kebab); the CLI and manifests use the names above.
+_consent_v2 = load_lexicon(CONSENT_V2_NSID)["defs"]["main"]["record"]["properties"]
+PEOPLE_PRESENT_V2 = tuple(_consent_v2["peoplePresent"]["knownValues"])
+
+# Bluesky's global self-label values for adult and graphic content
+# (atproto.com/specs/label). Dataset tools leave clips carrying them out
+# unless asked to include them.
+SENSITIVE_SELF_LABELS = ("porn", "sexual", "nudity", "graphic-media")
 
 # Capture-provenance tiers, weakest to strongest.
 PROVENANCE_ORDER = {"unverified": 0, "selfAttested": 1, "attested": 2}

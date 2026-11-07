@@ -16,13 +16,20 @@ do. Three entry points, from weakest to strongest:
   to reject other clients' records.
 
 The schema validator implements the subset of the Lexicon language our records
-use: object / string / integer / boolean / array / ref with required,
-maxLength (UTF-8 bytes), minLength, minimum/maximum, enum, const, and the
-formats at-uri, datetime, cid, did, language. Per spec ``knownValues`` is
-advisory (open) while ``enum`` is closed, and unknown fields are ignored.
-``maxGraphemes``/``minGraphemes`` are NOT implemented (they count grapheme
-clusters, not code points); no ConsentVid lexicon uses them, and a test keeps
-it that way.
+use: object / string / integer / boolean / array / ref / union with required,
+maxLength/minLength (UTF-8 bytes for strings), maxGraphemes/minGraphemes
+(extended grapheme clusters, Unicode UAX #29, counted with the ``regex``
+package), minimum/maximum, enum, const, and the formats at-uri, datetime, cid,
+did, language and uri. Refs and union members may name a def in the same
+lexicon (``#name``) or one of the few atproto defs our records use
+(com.atproto.repo.strongRef, com.atproto.label.defs#selfLabels), which are
+built in. Unions are open unless ``closed``: a member type we don't know is
+accepted unchecked. Per spec ``knownValues`` is advisory (open) while
+``enum`` is closed, and unknown fields are ignored.
+
+Both record versions are validated: org.consentvid.video/consent (V1) and
+org.consentvid.videoV2/consentV2. A consent may only reference a video of
+its own version (versions.py).
 
 A consent's ``createdAt`` is informational: there is at most one consent per
 video (the sidecar rule), so no ordering between consents is ever needed.
@@ -33,11 +40,18 @@ from __future__ import annotations
 import re
 from datetime import UTC, datetime
 
+import regex
+
 from consentvid.lexicons import load_lexicon
 from consentvid.records import (
     CONSENT_NSID,
+    CONSENT_NSIDS,
+    CONSENT_V2_NSID,
+    VIDEO_FOR_CONSENT,
     VIDEO_MIME_TYPES,
     VIDEO_NSID,
+    VIDEO_NSIDS,
+    VIDEO_V2_NSID,
     has_unsafe_chars,
     https_url_error,
     is_did,
@@ -47,7 +61,8 @@ from consentvid.records import (
     parse_dt,
     url_host_port_error,
 )
-from consentvid.vocab import IDENTITY_MODALITIES, PEOPLE_PRESENT
+from consentvid.versions import SELF_LABELS_TYPE, consent_view, storage_ref_of, video_view
+from consentvid.vocab import IDENTITY_MODALITIES, PEOPLE_PRESENT, PEOPLE_PRESENT_V2
 
 # Used with fullmatch only ('$' would accept a trailing newline).
 _SHA256_RE = re.compile(r"sha256-[0-9a-f]{64}")
@@ -114,6 +129,36 @@ def is_language(tag) -> bool:
     language = m.group("language")
     return language is None or bool(_PRIMARY_RE.fullmatch(language.split("-")[0]))
 _INT64 = (-(2**63), 2**63 - 1)  # atproto integers are 64-bit signed
+# atproto.com/specs/lexicon#uri: a URI with a scheme; at most 8 KB.
+_URI_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9+.-]*:[^\s]+", re.ASCII)
+_URI_MAX = 8192
+# The atproto defs our records reference, built in (so validation never
+# resolves anything over the network).
+_EXTERNAL_DEFS = {
+    "com.atproto.repo.strongRef": {
+        "type": "object",
+        "required": ["uri", "cid"],
+        "properties": {"uri": {"type": "string", "format": "at-uri"}, "cid": {"type": "string", "format": "cid"}},
+    },
+    SELF_LABELS_TYPE: {
+        "type": "object",
+        "required": ["values"],
+        "properties": {
+            "values": {"type": "array", "maxLength": 10, "items": {"type": "ref", "ref": "com.atproto.label.defs#selfLabel"}}
+        },
+    },
+    "com.atproto.label.defs#selfLabel": {
+        "type": "object",
+        "required": ["val"],
+        "properties": {"val": {"type": "string", "maxLength": 128}},
+    },
+}
+
+
+def grapheme_len(s: str) -> int:
+    """Number of extended grapheme clusters (what a reader sees as
+    characters: 'e' + combining accent, a flag or a skin-toned emoji is one)."""
+    return len(regex.findall(r"\X", s))
 _URL_KINDS = ("url", "r2", "peertube")
 # Open-vocabulary consent fields: shown to researchers and in terminals.
 _VOCAB_LIST_FIELDS = ("purposes", "modelClasses", "modalities")
@@ -152,12 +197,81 @@ def _validate_record(nsid: str, record, lexicon: dict, now: datetime) -> list[st
     schema = defs.get("main", {}).get("record")
     if not isinstance(schema, dict):
         return [f"lexicon {nsid} has no main record schema"]
-    errors = _validate_object(schema, record, defs, "")
+    errors = _validate_object(schema, record, _Ctx(nsid, defs), "")
     if nsid == CONSENT_NSID:
         errors.extend(_consent_rules(record))
+    elif nsid == CONSENT_V2_NSID:
+        errors.extend(_consent_v2_rules(record))
     elif nsid == VIDEO_NSID:
         errors.extend(_video_rules(record))
+    elif nsid == VIDEO_V2_NSID:
+        errors.extend(_video_v2_rules(record))
     return errors
+
+
+def _consent_v2_rules(record: dict) -> list[str]:
+    """V2 consents get the same domain rules as V1, applied to the internal
+    view (kebab-case vocabulary mapped back, subject -> videoUri/videoCid),
+    plus V2's own: peoplePresent spelled as in V2, and the subject must be
+    a videoV2 record."""
+    errors = []
+    people = record.get("peoplePresent")
+    if isinstance(people, str) and people not in PEOPLE_PRESENT_V2:
+        errors.append(
+            "peoplePresent must be one of " + ", ".join(PEOPLE_PRESENT_V2)
+            + ": consent must state who identifiably appears in the video"
+        )
+    for field in ("modalities", "purposes", "modelClasses"):
+        vals = record.get(field)
+        if _str_list(vals) and len(set(vals)) != len(vals):
+            errors.append(f"{field} contains duplicates")
+    subject = record.get("subject")
+    if isinstance(subject, dict) and isinstance(subject.get("uri"), str):
+        try:
+            parse_at_uri(subject["uri"], VIDEO_V2_NSID)
+        except ValueError as e:
+            errors.append(f"subject.uri: {e}")
+    view = consent_view(CONSENT_V2_NSID, record)
+    # peoplePresent and duplicate errors were reported above in V2 terms.
+    errors.extend(
+        e for e in _consent_rules(view)
+        if not e.startswith("peoplePresent must be") and not e.endswith("contains duplicates")
+        and not (e.startswith("videoCid") and "subject" not in record)
+    )
+    return [e.replace("videoCid", "subject.cid") for e in errors]
+
+
+def _video_v2_rules(record: dict) -> list[str]:
+    errors = []
+    h = record.get("contentHash")
+    if isinstance(h, str) and _is_cid(h) and _cid_codec(h) != _RAW:
+        errors.append("contentHash must be the CID of the raw bytes (raw codec, bafkrei...), not of a record")
+    mime = record.get("mimeType")
+    if mime is not None and mime not in VIDEO_MIME_TYPES:
+        errors.append(f"mimeType {mime!r} is not a video container type ({', '.join(sorted(VIDEO_MIME_TYPES))})")
+    langs = record.get("langs")
+    if _str_list(langs) and len(set(langs)) != len(langs):
+        errors.append("langs contains duplicates")
+    tags = record.get("tags")
+    if _str_list(tags) and any(has_unsafe_chars(t) for t in tags):
+        errors.append("tags contain control or format characters")
+    for val in _self_label_values(record):
+        if not val or has_unsafe_chars(val):
+            errors.append("labels contain an empty value or control/format characters")
+            break
+    storage = record.get("storage")
+    if isinstance(storage, dict):
+        ref = storage_ref_of(storage, VIDEO_V2_NSID)
+        errors.extend(e.replace("storageRef.value", "storage") for e in storage_ref_errors(ref))
+    return errors
+
+
+def _self_label_values(record: dict) -> list:
+    labels = record.get("labels")
+    if not isinstance(labels, dict) or labels.get("$type") != SELF_LABELS_TYPE:
+        return []
+    values = labels.get("values")
+    return [v.get("val") for v in values if isinstance(v, dict)] if isinstance(values, list) else []
 
 
 def _consent_rules(record: dict) -> list[str]:
@@ -259,17 +373,16 @@ def storage_ref_errors(ref) -> list[str]:
     return []
 
 
-def consent_ownership_errors(consent_did: str, record: dict) -> list[str]:
+def consent_ownership_errors(consent_did: str, record: dict, nsid: str = CONSENT_NSID) -> list[str]:
     """A consent may only reference a video in the SAME repo.
 
     The authorship attestation is signed by the consent writer's key; it means
     nothing for a video in someone else's repo. Without this rule any account
     could attach consent to (and attest authorship of) another person's video.
     """
-    try:
-        video = parse_at_uri(record.get("videoUri", ""), VIDEO_NSID)
-    except ValueError as e:
-        return [f"videoUri: {e}"]
+    video = _video_at(record, nsid)
+    if isinstance(video, str):
+        return [video]
     if video.did != consent_did:
         return [
             f"videoUri belongs to {video.did}, but the consent is written by "
@@ -278,14 +391,25 @@ def consent_ownership_errors(consent_did: str, record: dict) -> list[str]:
     return []
 
 
-def sidecar_key_errors(record: dict, rkey: str) -> list[str]:
+def _video_at(record: dict, nsid: str = CONSENT_NSID):
+    """The AtUri of the video a consent references (V1 videoUri / V2
+    subject.uri, which must name a video of the same version), or an error
+    message."""
+    view = consent_view(nsid, record) if isinstance(record, dict) else {}
+    uri = view.get("videoUri")
+    try:
+        return parse_at_uri(uri if isinstance(uri, str) else "", VIDEO_FOR_CONSENT[nsid])
+    except ValueError as e:
+        return f"{'videoUri' if nsid == CONSENT_NSID else 'subject.uri'}: {e}"
+
+
+def sidecar_key_errors(record: dict, rkey: str, nsid: str = CONSENT_NSID) -> list[str]:
     """A consent's record key must equal its video's record key. That makes
     the consent a sidecar of the video (as a threadgate is of its post), so
     the PDS itself allows at most one consent per video, and no reader ever
     has to choose between several."""
-    try:
-        video = parse_at_uri(record.get("videoUri", ""), VIDEO_NSID)
-    except (ValueError, AttributeError):
+    video = _video_at(record, nsid)
+    if isinstance(video, str):
         return []  # reported by the schema / ownership checks
     if video.rkey != rkey:
         return ["consent record key must equal its video's record key (sidecar rule)"]
@@ -302,11 +426,11 @@ def validate_in_repo(
     errors = validate_record(nsid, record, now=now)
     if rkey is not None and not is_tid(rkey):
         errors.append(f"record key {rkey!r} is not a TID (lexicon key: tid)")
-    if nsid == CONSENT_NSID and isinstance(record, dict):
+    if nsid in CONSENT_NSIDS and isinstance(record, dict):
         if not errors:
-            errors.extend(consent_ownership_errors(repo_did, record))
+            errors.extend(consent_ownership_errors(repo_did, record, nsid))
         if rkey is not None:
-            errors.extend(sidecar_key_errors(record, rkey))
+            errors.extend(sidecar_key_errors(record, rkey, nsid))
     return errors
 
 
@@ -314,8 +438,8 @@ def write_policy_errors(nsid: str, record: dict) -> list[str]:
     """Hygiene our CLI enforces on write. Records are public and permanent in
     the firehose history, so mistakes here can't be taken back."""
     errors = []
-    if nsid == VIDEO_NSID:
-        ref = record.get("storageRef") or {}
+    if nsid in VIDEO_NSIDS:
+        ref = video_view(nsid, record).get("storageRef") or {}
         value = ref.get("value", "")
         if ref.get("kind") == "local" and ("/" in value or "\\" in value):
             errors.append(
@@ -328,7 +452,33 @@ def write_policy_errors(nsid: str, record: dict) -> list[str]:
 # --------------------------------------------------------------- schema ------
 
 
-def _validate_object(schema: dict, value, defs: dict, path: str) -> list[str]:
+class _Ctx:
+    """The lexicon being validated against: its NSID and defs."""
+
+    def __init__(self, nsid: str, defs: dict):
+        self.nsid, self.defs = nsid, defs
+
+    def resolve(self, ref: str) -> dict | None:
+        """The def a ref names: '#name' or '<this nsid>#name' locally, else a
+        built-in atproto def. None if unknown."""
+        if not isinstance(ref, str):
+            return None
+        if ref.startswith("#"):
+            return self.defs.get(ref[1:])
+        base, _, name = ref.partition("#")
+        if base == self.nsid:
+            return self.defs.get(name or "main")
+        return _EXTERNAL_DEFS.get(ref if name and name != "main" else base)
+
+    def full(self, ref: str) -> str:
+        """A ref as the $type a union member carries: '#x' -> '<nsid>#x',
+        'nsid#main' -> 'nsid'."""
+        if ref.startswith("#"):
+            ref = f"{self.nsid}{ref}"
+        return ref[: -len("#main")] if ref.endswith("#main") else ref
+
+
+def _validate_object(schema: dict, value, ctx: _Ctx, path: str) -> list[str]:
     if not isinstance(value, dict):
         return [f"{path or '<root>'}: expected object, got {_typename(value)}"]
     errors: list[str] = []
@@ -345,24 +495,27 @@ def _validate_object(schema: dict, value, defs: dict, path: str) -> list[str]:
         if val is None and key not in schema.get("nullable", []):
             errors.append(f"{path}{key}: null is not allowed")
             continue
-        errors.extend(_validate_field(field_schema, val, defs, f"{path}{key}"))
+        errors.extend(_validate_field(field_schema, val, ctx, f"{path}{key}"))
     return errors
 
 
-def _validate_field(field_schema: dict, value, defs: dict, path: str) -> list[str]:
+def _validate_field(field_schema: dict, value, ctx: _Ctx, path: str) -> list[str]:
     ftype = field_schema.get("type")
 
     if ftype == "ref":
         ref = field_schema.get("ref", "")
-        target = defs.get(ref[1:]) if ref.startswith("#") else None
+        target = ctx.resolve(ref)
         if target is None:
             return [f"{path}: unresolvable ref {ref!r}"]
         if target.get("type") == "object":
-            return _validate_object(target, value, defs, f"{path}.")
-        return _validate_field(target, value, defs, path)
+            return _validate_object(target, value, ctx, f"{path}.")
+        return _validate_field(target, value, ctx, path)
+
+    if ftype == "union":
+        return _validate_union(field_schema, value, ctx, path)
 
     if ftype == "object":
-        return _validate_object(field_schema, value, defs, f"{path}.")
+        return _validate_object(field_schema, value, ctx, f"{path}.")
 
     if ftype == "string":
         return _validate_string(field_schema, value, path)
@@ -398,10 +551,29 @@ def _validate_field(field_schema: dict, value, defs: dict, path: str) -> list[st
             errs.append(f"{path}: {len(value)} items, maxLength {field_schema['maxLength']}")
         item_schema = field_schema.get("items", {})
         for i, item in enumerate(value):
-            errs.extend(_validate_field(item_schema, item, defs, f"{path}[{i}]"))
+            errs.extend(_validate_field(item_schema, item, ctx, f"{path}[{i}]"))
         return errs
 
     return []  # unsupported type: don't block
+
+
+def _validate_union(field_schema: dict, value, ctx: _Ctx, path: str) -> list[str]:
+    """A union value is an object whose $type names its member. Open unions
+    (the default) accept members we don't know, unchecked."""
+    if not isinstance(value, dict):
+        return [f"{path}: expected object, got {_typename(value)}"]
+    t = value.get("$type")
+    if not isinstance(t, str) or not t:
+        return [f"{path}: union member has no $type"]
+    for ref in field_schema.get("refs", []):
+        if ctx.full(ref) == t:
+            target = ctx.resolve(ref)
+            if target is None:
+                return [f"{path}: unresolvable ref {ref!r}"]
+            return _validate_object(target, value, ctx, f"{path}.")
+    if field_schema.get("closed"):
+        return [f"{path}: $type {t!r} is not one of {field_schema.get('refs')}"]
+    return []
 
 
 def _validate_string(field_schema: dict, value, path: str) -> list[str]:
@@ -417,6 +589,12 @@ def _validate_string(field_schema: dict, value, path: str) -> list[str]:
         errs.append(f"{path}: {n} bytes exceeds maxLength {field_schema['maxLength']}")
     if "minLength" in field_schema and n < field_schema["minLength"]:
         errs.append(f"{path}: {n} bytes below minLength {field_schema['minLength']}")
+    if "maxGraphemes" in field_schema or "minGraphemes" in field_schema:
+        g = grapheme_len(value)
+        if "maxGraphemes" in field_schema and g > field_schema["maxGraphemes"]:
+            errs.append(f"{path}: {g} characters exceeds maxGraphemes {field_schema['maxGraphemes']}")
+        if "minGraphemes" in field_schema and g < field_schema["minGraphemes"]:
+            errs.append(f"{path}: {g} characters below minGraphemes {field_schema['minGraphemes']}")
     fmt = field_schema.get("format")
     if fmt == "datetime" and parse_dt(value) is None:
         errs.append(f"{path}: {value!r} is not an atproto datetime (ISO-8601 with timezone)")
@@ -431,6 +609,8 @@ def _validate_string(field_schema: dict, value, path: str) -> list[str]:
         errs.append(f"{path}: {value!r} is not a CID")
     elif fmt == "language" and not is_language(value):
         errs.append(f"{path}: {value!r} is not a BCP-47 language tag")
+    elif fmt == "uri" and (len(value) > _URI_MAX or not _URI_RE.fullmatch(value)):
+        errs.append(f"{path}: {value[:80]!r} is not a URI")
     return errs
 
 

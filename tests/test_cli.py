@@ -7,7 +7,7 @@ import click
 import pytest
 from click.testing import CliRunner
 
-from conftest import ALICE, BOB, K0, K1, K2, VIDEO_CID, video_record
+from conftest import ALICE, BOB, K0, K1, K2, VIDEO_CID, video_record, video_v2_record
 from consentvid import cli
 from consentvid.errors import ConsentVidError
 
@@ -124,17 +124,26 @@ def test_expiry_parsing(value, ok):
 
 
 def _add_video(fake_client, rkey=K1, **kw):
+    """A version-1 video record (readers still accept it)."""
     fake_client.repo.records[("org.consentvid.video", rkey)] = (VIDEO_CID, video_record(**kw))
     return f"at://{ALICE}/org.consentvid.video/{rkey}"
 
 
+def _add_video_v2(fake_client, rkey=K1, **kw):
+    fake_client.repo.records[("org.consentvid.videoV2", rkey)] = (VIDEO_CID, video_v2_record(**kw))
+    return f"at://{ALICE}/org.consentvid.videoV2/{rkey}"
+
+
 def test_attach_pins_video_version_and_is_one_per_video(fake_client):
-    vuri = _add_video(fake_client)
+    vuri = _add_video_v2(fake_client)
     uri, cid, rec, replaced = cli._attach(fake_client, vuri, replace=False, validate=None, **TERMS)
     assert rec["videoCid"] == VIDEO_CID and rec["revocable"] is True and not replaced
     op, params = fake_client.repo.calls[-1]
     assert op == "create" and params["rkey"] == K1  # the video's own key: a sidecar (R1-01)
-    assert uri == f"at://{ALICE}/org.consentvid.consent/{K1}"
+    assert uri == f"at://{ALICE}/org.consentvid.consentV2/{K1}"
+    assert params["collection"] == "org.consentvid.consentV2"
+    assert params["record"]["subject"] == {"uri": vuri, "cid": VIDEO_CID}  # a strongRef
+    assert "revocable" not in params["record"] and params["record"]["rightsBasis"] == "own-recording"
     assert "validate" not in params  # PDS default policy
     with pytest.raises(ConsentVidError, match="already has consent"):
         cli._attach(fake_client, vuri, replace=False, validate=None, **TERMS)
@@ -147,14 +156,14 @@ def test_attach_pins_video_version_and_is_one_per_video(fake_client):
 
 
 def test_attach_replace_creates_when_absent_and_reports_concurrent_change(fake_client, monkeypatch):
-    vuri = _add_video(fake_client)
+    vuri = _add_video_v2(fake_client)
     _, cid, _, replaced = cli._attach(fake_client, vuri, replace=True, validate=None, **TERMS)
     assert not replaced and fake_client.repo.calls[-1][0] == "create"
     real_get = fake_client.repo.get_record
 
     def stale_get(p):  # someone rewrites the consent between our read and our write
         r = real_get(p)
-        if p["collection"] == "org.consentvid.consent":
+        if p["collection"] == "org.consentvid.consentV2":
             fake_client.repo.records[(p["collection"], p["rkey"])] = ("bafyother", r.value)
         return r
 
@@ -165,7 +174,15 @@ def test_attach_replace_creates_when_absent_and_reports_concurrent_change(fake_c
 
 def test_attach_refuses_other_repo(fake_client):
     with pytest.raises(ConsentVidError, match="not in your repo"):
-        cli._attach(fake_client, f"at://{BOB}/org.consentvid.video/{K1}", replace=False, validate=None, **TERMS)
+        cli._attach(fake_client, f"at://{BOB}/org.consentvid.videoV2/{K1}", replace=False, validate=None, **TERMS)
+
+
+def test_attach_refuses_a_version_1_video(fake_client):
+    """V2 consents bind only V2 videos; V1 videos can't get new consents."""
+    fake_client.repo.records[("org.consentvid.video", K1)] = (VIDEO_CID, video_record())
+    with pytest.raises(click.BadParameter, match="version-1 video record"):
+        cli._attach(fake_client, f"at://{ALICE}/org.consentvid.video/{K1}", replace=False, validate=None, **TERMS)
+    assert not [c for c in fake_client.repo.calls if c[0] in ("create", "put")]
 
 
 VOPTS = dict(
@@ -249,7 +266,7 @@ def test_register_validates_before_upload(fake_client, tmp_path, monkeypatch):
     monkeypatch.setattr("consentvid.storage.upload", lambda *a, **k: uploads.append(a) or _upload()())
     f = tmp_path / "clip.mp4"
     f.write_bytes(b"bytes")
-    with pytest.raises(ConsentVidError, match="maxLength"):
+    with pytest.raises(ConsentVidError, match="maxGraphemes"):
         cli._register(fake_client, f, storage_kind="r2", **{**VOPTS, "title": "x" * 400})
     assert uploads == []
 
@@ -887,7 +904,7 @@ def test_export_uses_only_the_sidecar_consent(monkeypatch, tmp_path):
     monkeypatch.setattr(identity, "resolve_did", lambda r: ALICE)
     monkeypatch.setattr(identity, "public_client", lambda did: None)
     monkeypatch.setattr(identity, "display_name", lambda did: "alice.test")
-    monkeypatch.setattr(cli, "_list_all", lambda client, did, coll: listing[coll])
+    monkeypatch.setattr(cli, "_list_all", lambda client, did, coll: listing.get(coll, []))
     out = tmp_path / "m.json"
     r = run("export", str(out), "--repo", ALICE)
     assert r.exit_code == 0, r.output
@@ -1008,7 +1025,7 @@ def test_r2_public_base_is_checked_before_upload(fake_client, tmp_path, monkeypa
     monkeypatch.setenv("CONSENTVID_R2_PUBLIC_URL", base)
     f = tmp_path / "clip.mp4"
     f.write_bytes(b"bytes")
-    with pytest.raises(ConsentVidError, match="storageRef"):
+    with pytest.raises(ConsentVidError, match="storage for 'r2'"):
         cli._register(fake_client, f, storage_kind="r2", **VOPTS)
     assert uploads == [] and not fake_client.repo.records
 
@@ -1040,10 +1057,15 @@ def test_contribute_writes_video_and_consent_in_one_apply_writes(fake_client, tm
     assert [c[0] for c in writes] == ["apply_writes"]
     video_w, consent_w = writes[0][1]["writes"]
     assert video_w["$type"] == consent_w["$type"] == "com.atproto.repo.applyWrites#create"
-    assert video_w["collection"] == "org.consentvid.video" and consent_w["collection"] == "org.consentvid.consent"
+    assert video_w["collection"] == "org.consentvid.videoV2" and consent_w["collection"] == "org.consentvid.consentV2"
     assert video_w["rkey"] == consent_w["rkey"] and is_tid(video_w["rkey"])
-    assert consent_w["value"]["videoCid"] == compute_cid(video_w["value"])
-    assert consent_w["value"]["videoUri"] == f"at://{ALICE}/org.consentvid.video/{video_w['rkey']}"
+    assert consent_w["value"]["subject"] == {
+        "uri": f"at://{ALICE}/org.consentvid.videoV2/{video_w['rkey']}", "cid": compute_cid(video_w["value"])
+    }
+    video = video_w["value"]
+    assert video["contentHash"].startswith("bafkrei") and video["storage"]["$type"].endswith("#r2Ref")
+    assert video["size"] == len(b"bytes") and "storageRef" not in video
+    assert consent_w["value"]["peoplePresent"] == "only-me"
     assert len(fake_client.repo.records) == 2
 
 
@@ -1072,7 +1094,7 @@ def test_contribute_repins_consent_if_the_pds_assigns_another_video_cid(fake_cli
     r = _contribute(fake_client, tmp_path, monkeypatch)
     assert r.exit_code == 0, r.output
     op, params = fake_client.repo.calls[-1]
-    assert op == "put" and params["record"]["videoCid"] == actual and "swapRecord" in params
+    assert op == "put" and params["record"]["subject"]["cid"] == actual and "swapRecord" in params
 
 
 # --------------------------------- R1-15: a 429 keeps the uploaded bytes
@@ -1430,8 +1452,10 @@ def test_publish_without_dns_needs_bootstrap(fake_client, lexicon_env):
     assert r.exit_code == 0, r.output
     writes = _writes(fake_client)
     # R2-02: a first publication is a createRecord under rkey=nsid.
-    assert [op for op, _ in writes] == ["create", "create"]
-    assert sorted(p["rkey"] for _, p in writes) == ["org.consentvid.consent", "org.consentvid.video"]
+    assert [op for op, _ in writes] == ["create"] * 4
+    assert sorted(p["rkey"] for _, p in writes) == [
+        "org.consentvid.consent", "org.consentvid.consentV2", "org.consentvid.video", "org.consentvid.videoV2"
+    ]
     assert all("validate" not in p for _, p in writes)
 
 
@@ -1500,7 +1524,13 @@ def test_publish_compatible_change_is_allowed(fake_client, lexicon_env):
         lexicon_env.publish(nsid, _json.loads((ROOT / "tests/fixtures/published_lexicons" / f"{nsid}.json").read_text()))
     r = run("publish-lexicons")
     assert r.exit_code == 0, r.output
-    assert [op for op, _ in _writes(fake_client)] == ["put", "put"]
+    # The published V1 schemas are updated; the new V2 NSIDs have nothing to
+    # be compatible with and are created.
+    ops = {p["rkey"]: op for op, p in _writes(fake_client)}
+    assert ops == {
+        "org.consentvid.video": "put", "org.consentvid.consent": "put",
+        "org.consentvid.videoV2": "create", "org.consentvid.consentV2": "create",
+    }
 
 
 def test_dns_failure_is_not_treated_as_no_record(fake_client, monkeypatch):
@@ -1678,8 +1708,10 @@ def test_register_that_commits_then_times_out_succeeds(fake_client, tmp_path, mo
 
     fake_client.repo.create_record = commit_then_timeout
     uri, cid, rec = cli._register(fake_client, f, storage_kind="r2", **VOPTS)
-    assert cid == compute_cid(rec) and deleted == []
-    assert uri.startswith(f"at://{ALICE}/org.consentvid.video/")
+    from consentvid.versions import video_record_v2
+
+    assert cid == compute_cid(video_record_v2(rec)) and deleted == []
+    assert uri.startswith(f"at://{ALICE}/org.consentvid.videoV2/")
 
 
 def test_timeout_with_nothing_written_cleans_up_as_before(fake_client, tmp_path, monkeypatch):
