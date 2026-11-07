@@ -223,6 +223,8 @@ def build_signer():
     return c2pa.Signer.from_callback(_sign, c2pa.C2paSigningAlg.ES256, certs_pem, tsa_url=None)
 
 
+SOURCE_INGREDIENT_LABEL = "consentvid-source"
+
 def build_manifest_definition(
     *,
     video_path: Path,
@@ -283,7 +285,17 @@ def build_manifest_definition(
             {
                 "label": "c2pa.actions",
                 "data": {
-                    "actions": [{"action": "c2pa.created", "softwareAgent": f"consentvid/{__version__}"}]
+                    # We stamp an existing file, so the honest action is
+                    # "opened" with that file as the parent ingredient, not
+                    # "created" (which would need a digitalSourceType claim
+                    # about how the footage was made that we can't back).
+                    "actions": [
+                        {
+                            "action": "c2pa.opened",
+                            "softwareAgent": f"consentvid/{__version__}",
+                            "parameters": {"ingredientIds": [SOURCE_INGREDIENT_LABEL]},
+                        }
+                    ]
                 },
             },
         ],
@@ -318,6 +330,14 @@ def embed_consent(
     )
     signer = build_signer()
     builder = c2pa.Builder.from_json(json.dumps(manifest))
+    from consentvid.records import mime_for
+
+    with open(video_path, "rb") as src:
+        builder.add_ingredient(
+            {"title": "source video", "relationship": "parentOf", "label": SOURCE_INGREDIENT_LABEL},
+            mime_for(video_path) or "video/mp4",
+            src,
+        )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     # Never write through or replace anything at the (predictable) output
     # path, including a dangling symlink: sign into a private directory and
