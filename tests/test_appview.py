@@ -1754,11 +1754,13 @@ def test_index_loop_drains_in_the_background_and_stops_cleanly(monkeypatch):
 
     async def run():
         n = await av.index_loop(conn, stop_after=2, drain=drain, drain_interval=0.01)
-        tasks_before.append(len(asyncio.all_tasks()))
+        # Count only drain tasks: a GC'd async generator may get an aclose() task.
+        tasks_before.append(sum(1 for t in asyncio.all_tasks()
+                                if t.get_coro().__name__ == "_drain_loop"))
         return n
 
     assert asyncio.run(run()) == 2
-    assert drained == [ALICE] and tasks_before == [1]  # only run() itself: the drain task is gone
+    assert drained == [ALICE] and tasks_before == [0]  # the drain task is gone
     assert len(av.query_consents(conn)) == 1
 
 
