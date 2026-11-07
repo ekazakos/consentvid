@@ -113,5 +113,5 @@
     "Model classes granted by at least one clip: academic, openWeights",
     "Terms are per clip and authoritative in each cv:consentReceipt; filter on them."
   ],
-  "rai:dataLimitations": "Use is governed by each clip's consent receipt, not by a blanket licence. Authorship is self-attested by contributors unless captureProvenance is 'attested'."
+  "rai:dataLimitations": "Use is governed by each clip's consent receipt, not by a blanket licence. Authorship and captureProvenance are self-declared by contributors; ConsentVid does not yet verify capture-time provenance."
 }

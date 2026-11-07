@@ -13,19 +13,33 @@ C2PA and cryptography are optional; install with ``pip install -e ".[c2pa]"``.
 Signing requires an X.509 certificate. For the prototype we generate a
 self-signed ES256 signer cached under ~/.consentvid/c2pa/. Self-signed manifests
 embed and read back fine but will NOT chain to the C2PA trust list — a reader
-flags the signer as untrusted. Production must use a CA-issued document-signing
-certificate; swap the PEMs at the paths below and nothing else changes.
+flags the signer as untrusted.
+
+What an embedded receipt proves: nothing about the file. It is a *pointer* to
+the consent record, not evidence that this file is the consented bytes. Any
+C2PA signer (self-signed or CA-trusted) can stamp anyone's public receipt onto
+other video, the signer is not the contributor's DID key, and embedding changes
+the bytes so the file can never match the signed contentHash. ``consentvid
+resync`` therefore reports a C2PA file as UNBOUND (dropped) even when the
+consent stands, and points at the registered bytes (by sha256) to use instead.
+Binding a file to a consent would need the contributor's own key in the
+signature (e.g. CAWG identity assertions tied to the DID); a CA-issued
+certificate alone does not provide it.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
+import tempfile
 from pathlib import Path
 
 from consentvid import __version__
-from consentvid.errors import ConfigError
+from consentvid.errors import ConfigError, ConsentVidError
+from consentvid.paths import secure_dir, write_private
 from consentvid.records import mime_for as _mime
+from consentvid.records import normalize_dt
 
 CONSENT_ASSERTION_LABEL = "org.consentvid.consent"
 _SIGNER_DIR = Path(os.environ.get("CONSENTVID_HOME", Path.home() / ".consentvid")) / "c2pa"
@@ -33,11 +47,32 @@ _CERT_PATH = _SIGNER_DIR / "signer.cert.pem"
 _KEY_PATH = _SIGNER_DIR / "signer.key.pem"
 
 
+# Bundled c2pa-rs releases before 0.85.1 are affected by CVE-2026-34712
+# (Adobe APSB26-61, DoS on crafted input); we parse untrusted files.
+MIN_SDK_VERSION = (0, 85, 1)
+
+
+def _sdk_version(c2pa) -> tuple[int, ...] | None:
+    try:
+        v = c2pa.sdk_version()
+    except Exception:  # noqa: BLE001
+        return None
+    m = re.match(r"\s*(\d+)\.(\d+)\.(\d+)", str(v))
+    return tuple(int(x) for x in m.groups()) if m else None
+
+
 def _require_c2pa():
     try:
         import c2pa  # noqa: F401
     except ImportError as e:
         raise ConfigError('c2pa-python is required: pip install "consentvid[c2pa]"') from e
+    v = _sdk_version(c2pa)
+    if v is None or v < MIN_SDK_VERSION:
+        need = ".".join(map(str, MIN_SDK_VERSION))
+        raise ConfigError(
+            f"c2pa-python bundles c2pa-rs {'.'.join(map(str, v)) if v else 'of unknown version'}, older than "
+            f"{need} (CVE-2026-34712, APSB26-61): upgrade with pip install -U \"c2pa-python>=0.32.11\""
+        )
     return c2pa
 
 
@@ -146,19 +181,21 @@ def ensure_signer_cert() -> tuple[Path, Path]:
         .sign(root_key, hashes.SHA256())
     )
 
-    _SIGNER_DIR.mkdir(parents=True, exist_ok=True)
+    # Owner-only from the start: CONSENTVID_HOME may not exist yet (no login).
+    secure_dir(_SIGNER_DIR.parent)
+    secure_dir(_SIGNER_DIR)
     chain_pem = leaf_cert.public_bytes(serialization.Encoding.PEM) + root_cert.public_bytes(
         serialization.Encoding.PEM
     )
     _CERT_PATH.write_bytes(chain_pem)
-    _KEY_PATH.write_bytes(
+    write_private(
+        _KEY_PATH,
         leaf_key.private_bytes(
             serialization.Encoding.PEM,
             serialization.PrivateFormat.PKCS8,
             serialization.NoEncryption(),
-        )
+        ),
     )
-    _KEY_PATH.chmod(0o600)
     return _CERT_PATH, _KEY_PATH
 
 
@@ -216,8 +253,8 @@ def build_manifest_definition(
         "captureProvenance": consent.get("captureProvenance", "unverified"),
         "peoplePresent": consent.get("peoplePresent"),
         "adultAttested": consent.get("adultAttested", False),
-        "expiresAt": consent.get("expiresAt"),
-        "createdAt": consent.get("createdAt"),
+        "expiresAt": normalize_dt(consent.get("expiresAt")),
+        "createdAt": normalize_dt(consent.get("createdAt")),
         "revocationNote": (
             "Authoritative consent is the ATproto record at consentUri. If that "
             "record is deleted, consent is revoked; re-check before any use."
@@ -282,9 +319,19 @@ def embed_consent(
     signer = build_signer()
     builder = c2pa.Builder.from_json(json.dumps(manifest))
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    if out_path.exists():
-        out_path.unlink()  # c2pa won't overwrite an existing destination
-    builder.sign_file(str(video_path), str(out_path), signer)
+    # Never write through or replace anything at the (predictable) output
+    # path, including a dangling symlink: sign into a private directory and
+    # publish exclusively.
+    if os.path.lexists(out_path):
+        raise ConsentVidError(f"{out_path} already exists; remove it first")
+    from consentvid.media import publish_file
+    from consentvid.paths import secure_dir
+
+    home = secure_dir(Path(os.environ.get("CONSENTVID_HOME", Path.home() / ".consentvid")))
+    with tempfile.TemporaryDirectory(dir=home, prefix="c2pa-") as wd:
+        tmp = Path(wd) / ("out" + out_path.suffix)
+        builder.sign_file(str(video_path), str(tmp), signer)
+        publish_file(tmp, out_path)
     return out_path
 
 

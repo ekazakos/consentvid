@@ -12,10 +12,16 @@ absence. We then check, entirely locally:
 3. walking the MST from the commit's root reaches the record (presence) or a
    gap where it would be (absence).
 
-So "valid" means "the contributor's key currently vouches for exactly these
-bytes", and "revoked" means "the contributor's key vouches that the record is
-gone". Neither depends on trusting the PDS. (A PDS could still serve a stale
-commit — a rollback — which would need a relay/witness to detect.)
+So "valid" means "the holder of the DID's current #atproto signing key vouches
+for exactly these bytes", and "revoked" means "the holder of that key vouches
+that the record is gone". That removes trust in transport, mirrors, relays and
+caches — but NOT in the hosting PDS for typical accounts: on a standard PDS
+(e.g. bsky.social) the PDS operator holds the repo signing key, so a malicious
+or compromised PDS can sign commits that re-add a deleted consent or forge a
+new one. Consumers should use manifests that pin the consent and video CIDs
+(the default export), which limits a forging PDS to replaying the exact
+records the manifest already references. A PDS can also serve a stale commit
+(a rollback), which would need a relay/witness to detect.
 """
 
 from __future__ import annotations

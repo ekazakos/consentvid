@@ -11,14 +11,21 @@ dependencies = [
     "click>=8.1",
     "python-dotenv>=1.0",
     "websockets>=13.0",
-    "dnspython>=2.6",
+    "dnspython>=2.9",
+    # TLS trust path for plc.directory / PDS reads (resync's trusted root):
+    # GHSA-6q48-6c7w-9gw2 (compromised emSign intermediates) fixed in 2026.10.18.
+    "certifi>=2026.10.18",
+    "urllib3>=2.8",
 ]
 
 [project.optional-dependencies]
 r2 = ["boto3>=1.34"]
 ipfs = ["httpx>=0.27"]
 peertube = ["httpx>=0.27"]
-c2pa = ["c2pa-python>=0.32", "cryptography>=42"]
+# c2pa-python 0.32.11 is the first release bundling c2pa-rs >= 0.85.1, which fixes
+# CVE-2026-34712 (Adobe APSB26-61: DoS on crafted input; resync/read-c2pa parse
+# untrusted files). c2pa_embed also refuses older SDKs at run time.
+c2pa = ["c2pa-python>=0.32.11", "cryptography>=50"]
 dev = [
     "consentvid[r2,ipfs,c2pa]",
     "mlcroissant>=1.0",

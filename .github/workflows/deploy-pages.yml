@@ -24,10 +24,31 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
+      # Actions pinned to full commit SHAs (tags are mutable); Dependabot
+      # (.github/dependabot.yml) proposes updates.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Refuse to publish a sample manifest that leaks local paths
+        run: python3 .github/check_dataset.py web/dataset.json
+      - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
         with:
           path: web
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
+      - name: Check the dataset.json that is actually being served
+        env:
+          PAGE_URL: ${{ steps.deployment.outputs.page_url }}
+        run: |
+          set -euo pipefail
+          # The Pages CDN can serve the previous version for a few minutes.
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            if curl -fsSL "${PAGE_URL%/}/dataset.json?run=${GITHUB_RUN_ID}-${attempt}" -o deployed.json \
+               && python3 .github/check_dataset.py deployed.json; then
+              exit 0
+            fi
+            sleep 30
+          done
+          echo "::error::the deployed dataset.json still fails the check"
+          exit 1

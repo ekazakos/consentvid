@@ -124,3 +124,34 @@ def fake_client():
     client.com = SimpleNamespace(atproto=SimpleNamespace(repo=repo))
     client.repo = repo
     return client
+
+
+class MockHttpx:
+    """Stands in for the httpx module inside consentvid.storage: every client
+    and module-level call goes through one MockTransport(handler), so the
+    real code paths (sessions, ``with``/close, raise_for_status) run."""
+
+    def __init__(self, handler):
+        import httpx
+
+        self._httpx = httpx
+        self.transport = httpx.MockTransport(handler)
+        self.ConnectError = httpx.ConnectError
+        self.HTTPError = httpx.HTTPError
+
+    def Client(self, **kw):  # noqa: N802 — mirrors httpx.Client
+        return self._httpx.Client(transport=self.transport, **kw)
+
+    def _call(self, method, url, **kw):
+        kw.pop("timeout", None)
+        with self._httpx.Client(transport=self.transport) as c:
+            return c.request(method, url, **kw)
+
+    def post(self, url, **kw):
+        return self._call("POST", url, **kw)
+
+    def delete(self, url, **kw):
+        return self._call("DELETE", url, **kw)
+
+    def get(self, url, **kw):
+        return self._call("GET", url, **kw)

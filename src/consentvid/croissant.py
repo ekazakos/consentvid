@@ -17,11 +17,15 @@ from dataclasses import dataclass
 from datetime import date
 
 from consentvid import __version__
-from consentvid.records import mime_for
+from consentvid.records import mime_for, normalize_dt
 from consentvid.storage import public_url
 
 CV_NS = "https://consentvid.org/ns#"
 LICENSE_URL = "https://consentvid.org/license.html"
+# What the pre-cv: exporter (3fc54ea..533c2a3) wrote; resync accepts these only
+# in manifests with the legacy context / legacy entries.
+LEGACY_LICENSE_URL = "https://creativecommons.org/licenses/by/4.0/"
+LEGACY_ENCODING_FORMAT = "video/*"
 
 CROISSANT_CONTEXT = {
     "@language": "en",
@@ -60,6 +64,20 @@ CROISSANT_CONTEXT = {
     "subField": "cr:subField",
     "transform": "cr:transform",
 }
+
+
+# Context written by ConsentVid before the cv: namespace existed (commit
+# 3fc54ea..533c2a3). resync accepts exactly these two contexts and nothing
+# else: any other context can re-map keys (e.g. alias another term to
+# schema.org/contentUrl) so that a Croissant loader and resync read different
+# data from the same JSON.
+LEGACY_CONTEXTS = (
+    {
+        **{k: v for k, v in CROISSANT_CONTEXT.items() if k != "cv"},
+        "equivalentProperty": {"@id": "sc:equivalentProperty", "@type": "@vocab"},
+        "samplingRate": "cr:samplingRate",
+    },
+)
 
 
 @dataclass
@@ -114,8 +132,10 @@ def _file_object(clip: Clip) -> dict | None:
             "captureProvenance": c.get("captureProvenance", "unverified"),
             "peoplePresent": c.get("peoplePresent"),
             "adultAttested": c.get("adultAttested"),
-            "expiresAt": c.get("expiresAt"),
-            "createdAt": c.get("createdAt"),
+            # Canonical RFC 3339 UTC, so string/JS comparisons downstream agree
+            # with ours (None stays None; resync compares normalised values).
+            "expiresAt": normalize_dt(c.get("expiresAt")),
+            "createdAt": normalize_dt(c.get("createdAt")),
         },
     }
 
@@ -186,8 +206,8 @@ def build_manifest(
         ],
         "rai:dataLimitations": (
             "Use is governed by each clip's consent receipt, not by a blanket licence. "
-            "Authorship is self-attested by contributors unless captureProvenance is "
-            "'attested'."
+            "Authorship and captureProvenance are self-declared by contributors; "
+            "ConsentVid does not yet verify capture-time provenance."
         ),
     }
     return manifest, skipped
