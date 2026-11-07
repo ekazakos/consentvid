@@ -1,0 +1,135 @@
+{
+  "id": "org.consentvid.consent",
+  "defs": {
+    "main": {
+      "key": "tid",
+      "type": "record",
+      "record": {
+        "type": "object",
+        "required": [
+          "videoUri",
+          "modalities",
+          "purposes",
+          "modelClasses",
+          "compensation",
+          "revocable",
+          "authorshipAttested",
+          "createdAt"
+        ],
+        "properties": {
+          "purposes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "knownValues": [
+                "training",
+                "evaluation",
+                "benchmarking",
+                "researchOnly"
+              ]
+            },
+            "minLength": 1,
+            "description": "What the data may be used FOR. 'researchOnly' is DEPRECATED: it overlaps the 'academic' model class (who may use it); new clients don't offer it, but it remains valid in existing records."
+          },
+          "videoCid": {
+            "type": "string",
+            "format": "cid",
+            "description": "CID of the exact org.consentvid.video record version this consent applies to (together with videoUri, a strong reference). If the video record is later rewritten, this consent no longer applies to it."
+          },
+          "videoUri": {
+            "type": "string",
+            "format": "at-uri",
+            "description": "AT-URI of the org.consentvid.video record this consent applies to. Must be in the same repo as this consent."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "datetime"
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "datetime",
+            "description": "Optional expiry; after this time the consent is no longer valid."
+          },
+          "revocable": {
+            "type": "boolean",
+            "description": "Whether the contributor may withdraw consent. Consent to processing personal data (faces, voices) must be withdrawable (GDPR Art. 7(3)); ConsentVid clients always write true. Withdrawal is performed by deleting this record."
+          },
+          "modalities": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "knownValues": [
+                "video",
+                "audio",
+                "transcript",
+                "face",
+                "voice"
+              ]
+            },
+            "minLength": 1
+          },
+          "rightsBasis": {
+            "type": "string",
+            "description": "Basis on which the contributor holds the right to grant consent: 'ownRecording' = they captured it, 'licensed' = licensed from the creator, 'otherRightsHolder' = other documented basis.",
+            "knownValues": [
+              "ownRecording",
+              "licensed",
+              "otherRightsHolder"
+            ]
+          },
+          "compensation": {
+            "type": "string",
+            "description": "What compensation the contributor declares they expect. Informational only: ConsentVid does not broker or enforce payment. Researchers may filter on it.",
+            "knownValues": [
+              "none",
+              "creditOnly",
+              "monetary"
+            ]
+          },
+          "modelClasses": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "knownValues": [
+                "academic",
+                "openWeights",
+                "commercial",
+                "foundationModel"
+              ]
+            },
+            "minLength": 1,
+            "description": "WHO may use the data, and under what release model. 'foundationModel' is DEPRECATED: it describes a kind of model, not a user; new clients don't offer it, but it remains valid in existing records."
+          },
+          "adultAttested": {
+            "type": "boolean",
+            "description": "The contributor affirms, under their signing key, that they are an adult (18 or older, or the age of majority where they live, if higher) and legally capable of giving this consent. Self-declared, not verified. Optional in the schema for evolution compatibility, but ConsentVid treats a consent without adultAttested=true as invalid."
+          },
+          "peoplePresent": {
+            "type": "string",
+            "description": "Who identifiably appears or is heard in the video: 'onlyMe' = only the contributor; 'allConsented' = every identifiable person gave the contributor permission for this use; 'noIdentifiablePeople' = no identifiable face or voice (e.g. hands-only footage), which is incompatible with the 'face' and 'voice' modalities. Optional in the schema for evolution compatibility, but ConsentVid treats a consent without one of these values as invalid.",
+            "knownValues": [
+              "onlyMe",
+              "allConsented",
+              "noIdentifiablePeople"
+            ]
+          },
+          "captureProvenance": {
+            "type": "string",
+            "description": "Strength of the capture-provenance guarantee. 'attested' = capture-time cryptographic provenance (e.g. C2PA/CAWG) binds the recording to the contributor's DID; 'selfAttested' = signed authorship attestation only; 'unverified' = neither.",
+            "knownValues": [
+              "attested",
+              "selfAttested",
+              "unverified"
+            ]
+          },
+          "authorshipAttested": {
+            "type": "boolean",
+            "description": "The contributor affirms, under their signing key, that they recorded this video themselves (or are otherwise its rightful author) and are authorized to grant this consent. A consent receipt is invalid unless this is true; uploading someone else's video and consenting to its use would be unlawful."
+          }
+        }
+      },
+      "description": "A consent receipt declaring permissions for AI training use of a referenced video record. Cryptographically signed by the user's repo key (inherent to ATproto records)."
+    }
+  },
+  "lexicon": 1
+}

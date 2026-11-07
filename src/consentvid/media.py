@@ -170,6 +170,24 @@ def _is_cover(s: dict) -> bool:
     return (s.get("disposition") or {}).get("attached_pic") == 1
 
 
+# Record integers stay within 53 bits (atproto.com/specs/data-model: JS
+# readers can't represent more).
+MAX_RECORD_INT = 2**53 - 1
+
+
+def _record_int(value) -> int | None:
+    """A non-negative integer for a record field, or None (field dropped)
+    for anything non-finite ('inf', NaN), negative, too large or not a
+    number."""
+    if isinstance(value, bool):
+        return None
+    try:
+        n = int(round(float(value)))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return n if 0 <= n <= MAX_RECORD_INT else None
+
+
 def probe(path: Path) -> Probe | None:
     """Inspect a video. Returns None if ffprobe is unavailable. Raises
     ConsentVidError for anything that isn't a supported video container."""
@@ -219,11 +237,11 @@ def probe(path: Path) -> Probe | None:
         for sd in (s.get("side_data_list") or [])
         if isinstance(sd, dict)
     )
-    p.width, p.height = video.get("width"), video.get("height")
+    p.width, p.height = _record_int(video.get("width")), _record_int(video.get("height"))
     dur = video.get("duration") or fmt.get("duration")
     if dur not in (None, "N/A"):
         try:
-            p.duration_ms = int(round(float(dur) * 1000))
+            p.duration_ms = _record_int(float(dur) * 1000)
         except (TypeError, ValueError):
             p.duration_ms = None
 

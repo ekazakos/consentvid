@@ -6,7 +6,7 @@ import subprocess
 
 import pytest
 
-from conftest import ALICE, consent_record, video_record
+from conftest import ALICE, K1, consent_record, video_record
 from consentvid.errors import ConfigError, ConsentVidError
 
 c2pa = pytest.importorskip("c2pa")
@@ -41,10 +41,10 @@ def _embed(video, out):
     return ce.embed_consent(
         video_path=video,
         out_path=out,
-        consent_uri=f"at://{ALICE}/org.consentvid.consent/c1",
+        consent_uri=f"at://{ALICE}/org.consentvid.consent/{K1}",
         consent_cid="bafyconsent",
         consent=consent_record(),
-        video_uri=f"at://{ALICE}/org.consentvid.video/v1",
+        video_uri=f"at://{ALICE}/org.consentvid.video/{K1}",
         video_cid="bafyvideo",
         video=video_record(),
         contributor_handle="alice.test",
@@ -75,7 +75,7 @@ def test_normal_embed_still_reads_back(signer_home, video, tmp_path):
     out = _embed(video, tmp_path / "clip.c2pa.mp4")
     assert not out.is_symlink()
     receipt, _state = ce.extract_consent_receipt(out)
-    assert receipt["consentUri"] == f"at://{ALICE}/org.consentvid.consent/c1"
+    assert receipt["consentUri"] == f"at://{ALICE}/org.consentvid.consent/{K1}"
     assert ce.read_manifest(out)["active_manifest"]
 
 
@@ -93,3 +93,49 @@ def test_old_c2pa_sdk_is_refused(monkeypatch, v):
 def test_current_c2pa_sdk_is_accepted(monkeypatch):
     monkeypatch.setattr(c2pa, "sdk_version", lambda: "0.85.1")
     assert ce._require_c2pa() is c2pa
+
+
+# ------------------------------- R1-06: a DID never goes in a 'handle' field
+
+
+def test_unverified_identity_has_no_handle_in_the_receipt(tmp_path):
+    kw = dict(
+        video_path=tmp_path / "clip.mp4",
+        consent_uri=f"at://{ALICE}/org.consentvid.consent/{K1}",
+        consent_cid="bafyconsent",
+        consent=consent_record(),
+        video_uri=f"at://{ALICE}/org.consentvid.video/{K1}",
+        video_cid="bafyvideo",
+        video=video_record(),
+        contributor_did=ALICE,
+    )
+    m = ce.build_manifest_definition(contributor_handle=None, **kw)
+    receipt = m["assertions"][0]["data"]
+    assert receipt["contributor"] == {"did": ALICE}
+    (author,) = m["assertions"][1]["data"]["author"]
+    assert author["identifier"] == ALICE and "alternateName" not in author
+    m = ce.build_manifest_definition(contributor_handle="alice.example.com", **kw)
+    contributor = m["assertions"][0]["data"]["contributor"]
+    assert contributor["handle"] == "alice.example.com" and "handleVerifiedAt" in contributor
+    assert m["assertions"][1]["data"]["author"][0]["alternateName"] == "alice.example.com"
+
+
+def test_cli_passes_only_a_verified_handle(monkeypatch):
+    from types import SimpleNamespace
+
+    from consentvid import cli, identity
+
+    assert cli._verified_handle(ALICE, lambda did: None) is None
+    assert cli._verified_handle(ALICE, lambda did: "a.example.com") == "a.example.com"
+    # R2-11: an unverified alsoKnownAs claim never reaches the manifest.
+    monkeypatch.setattr(identity, "resolve_identity",
+                        lambda did: SimpleNamespace(claimed_handle="a.example.com"))
+    monkeypatch.setattr(identity, "_resolve_handle", lambda h: "did:plc:someoneelse0000000000000")
+    identity.verified_handle.cache_clear()
+    assert cli._verified_handle(ALICE, identity.verified_handle) is None
+    identity.verified_handle.cache_clear()
+
+    def boom(did):
+        raise RuntimeError("plc down")
+
+    assert cli._verified_handle(ALICE, boom) is None

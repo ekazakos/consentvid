@@ -1,0 +1,32 @@
+{
+ "uri": "at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.post/3mzhhvhjfwk22",
+ "cid": "bafyreibycve3lc6jukekmugpbv7obg25rdl7cifs7ixjiq3cueurgbd7xi",
+ "value": {
+  "text": "We're seeing 200% of our usual data traffic\u2014and climbing! Thanks to all of you for making this a night to remember",
+  "$type": "app.bsky.feed.post",
+  "embed": {
+   "$type": "app.bsky.embed.images",
+   "images": [
+    {
+     "alt": "Steeply climbing chart with the number 25.8 Gb/s superimposed.",
+     "image": {
+      "ref": {
+       "$link": "bafkreiczrhhklt4wsquxzgudjxd7w4rch4tcbb7fkedhg56h3bfvsla2v4"
+      },
+      "size": 324306,
+      "$type": "blob",
+      "mimeType": "image/jpeg"
+     },
+     "aspectRatio": {
+      "width": 2328,
+      "height": 1570
+     }
+    }
+   ]
+  },
+  "langs": [
+   "en"
+  ],
+  "createdAt": "2026-11-04T04:03:40.249Z"
+ }
+}

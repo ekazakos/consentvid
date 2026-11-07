@@ -47,19 +47,20 @@
   },
   "@type": "sc:Dataset",
   "name": "consentvid-ekazakos-bsky-social-2026-11-01",
-  "description": "Consent-first video dataset of 1 clip(s) from 1 contributor(s), built with ConsentVid 0.1.0. Every clip carries a signed ATproto consent receipt stating the permitted purposes, model classes and modalities.",
+  "description": "ILLUSTRATIVE EXAMPLE: the records this sample references have since been withdrawn, so `consentvid resync` drops every clip in it (as it must). Consent-first video dataset of 1 clip(s) from 1 contributor(s), built with ConsentVid 0.1.0. Every clip carries a signed ATproto consent receipt stating the permitted purposes, model classes and modalities.",
   "conformsTo": "http://mlcommons.org/croissant/1.0",
   "version": "1.0.0",
   "datePublished": "2026-11-01",
   "isLiveDataset": true,
   "license": "https://consentvid.org/license.html",
-  "url": "https://bsky.app/profile/did:plc:u73ld57pmwsta45y45uitdfi",
-  "citeAs": "consentvid-ekazakos-bsky-social-2026-11-01 (2026-11-01). ConsentVid dataset. https://bsky.app/profile/did:plc:u73ld57pmwsta45y45uitdfi",
+  "url": "https://consentvid.org",
+  "citeAs": "consentvid-ekazakos-bsky-social-2026-11-01 (2026-11-01). ConsentVid dataset. https://consentvid.org",
   "creator": [
     {
       "@type": "sc:Person",
       "name": "ekazakos.bsky.social",
-      "identifier": "did:plc:u73ld57pmwsta45y45uitdfi"
+      "identifier": "did:plc:u73ld57pmwsta45y45uitdfi",
+      "sameAs": "at://did:plc:u73ld57pmwsta45y45uitdfi"
     }
   ],
   "distribution": [

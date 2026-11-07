@@ -4,7 +4,7 @@
   "defs": {
     "main": {
       "type": "record",
-      "description": "A video registered for inclusion in a consent-first dataset. Storage of the bytes is decoupled: this record only commits to a content hash and a pointer.",
+      "description": "A video registered for inclusion in a consent-first dataset. Storage of the bytes is decoupled: this record only commits to a content hash and a pointer. Its consent, if any, is the org.consentvid.consent record in the same repo with the same record key.",
       "key": "tid",
       "record": {
         "type": "object",
@@ -17,7 +17,8 @@
         "properties": {
           "title": {
             "type": "string",
-            "maxLength": 300
+            "maxLength": 300,
+            "description": "Human-readable title, at most 300 UTF-8 bytes."
           },
           "description": {
             "type": "string",
@@ -25,27 +26,41 @@
           },
           "contentHash": {
             "type": "string",
-            "description": "SHA-256 of the video bytes, hex-encoded with 'sha256-' prefix.",
+            "description": "SHA-256 of the video bytes: \"sha256-\" followed by 64 lowercase hex characters.",
             "maxLength": 80
           },
           "mimeType": {
             "type": "string",
             "maxLength": 128,
-            "description": "MIME type of the video bytes, e.g. video/mp4."
+            "description": "MIME type of the video bytes, e.g. video/mp4. Readers reject values outside knownValues: it becomes the dataset's encodingFormat, which dataset loaders act on.",
+            "knownValues": [
+              "video/3gpp",
+              "video/matroska",
+              "video/mp2t",
+              "video/mp4",
+              "video/mpeg",
+              "video/quicktime",
+              "video/vnd.avi",
+              "video/webm",
+              "video/x-matroska",
+              "video/x-msvideo"
+            ]
           },
           "durationMs": {
             "type": "integer",
-            "description": "Duration in milliseconds. ATproto records have no float type."
+            "description": "Duration in milliseconds: non-negative, at most 2^53-1. ATproto records have no float type."
           },
           "width": {
-            "type": "integer"
+            "type": "integer",
+            "description": "Frame width in pixels: non-negative, at most 2^53-1."
           },
           "height": {
-            "type": "integer"
+            "type": "integer",
+            "description": "Frame height in pixels: non-negative, at most 2^53-1."
           },
           "language": {
             "type": "string",
-            "description": "BCP-47 language tag for primary audio if any."
+            "description": "BCP-47 language tag for the primary spoken language, if any, with a lowercase primary subtag (e.g. en, cs, pt-BR); readers reject other values."
           },
           "tags": {
             "type": "array",
@@ -53,7 +68,8 @@
               "type": "string",
               "maxLength": 64
             },
-            "maxLength": 32
+            "maxLength": 32,
+            "description": "Topic tags, at most 32, each at most 64 UTF-8 bytes."
           },
           "storageRef": {
             "type": "ref",
@@ -61,13 +77,15 @@
           },
           "createdAt": {
             "type": "string",
-            "format": "datetime"
+            "format": "datetime",
+            "description": "Record write time."
           }
         }
       }
     },
     "storageRef": {
       "type": "object",
+      "description": "Where the video bytes live. Readers reject refs whose value does not match the kind.",
       "required": [
         "kind",
         "value"
@@ -75,6 +93,7 @@
       "properties": {
         "kind": {
           "type": "string",
+          "description": "'url' = a public https URL; 'r2' = the public https URL of a Cloudflare R2 object; 'peertube' = an https watch/download URL on a PeerTube instance (for these three: a public host on the default port, no credentials); 'ipfs' = a CID (bafy... or Qm...), optionally ipfs://-prefixed; 'local' = an opaque contributor-side name, never dereferenced (no control characters).",
           "knownValues": [
             "url",
             "local",

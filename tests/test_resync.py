@@ -5,14 +5,14 @@ import pytest
 from atproto_client.exceptions import BadRequestError
 from click.testing import CliRunner
 
-from conftest import ALICE, BOB, HASH, VIDEO_CID, consent_record, video_record
+from conftest import ALICE, BOB, HASH, K1, K2, VIDEO_CID, consent_record, video_record
 from consentvid import resync as rs
 from consentvid.croissant import CROISSANT_CONTEXT, LEGACY_CONTEXTS, Clip, _file_object, build_manifest
 from consentvid.errors import ConsentVidError, RepoUnavailable, VerificationError
 from consentvid.verify import VerifiedRecord
 
-CURI = f"at://{ALICE}/org.consentvid.consent/c1"
-VURI = f"at://{ALICE}/org.consentvid.video/v1"
+CURI = f"at://{ALICE}/org.consentvid.consent/{K1}"
+VURI = f"at://{ALICE}/org.consentvid.video/{K1}"
 CCID = "bafyconsent"
 URL = "https://example.org/videos/x"
 
@@ -118,13 +118,17 @@ def test_attested_provenance_is_not_trusted():
 
 
 def test_legacy_manifest_without_cids_still_checked():
+    # R3-03: a consent that does not pin its video version is invalid ...
     legacy = consent_record()
     del legacy["videoCid"]
     r = rs.check(
         item(legacy, consent_cid=None, video_cid=None),
         fetch=fetcher(consent=legacy, video_cid="bafyanything"),
     )
-    assert r.status == rs.VALID and "legacy" in r.reason
+    assert r.status == rs.INVALID and "videoCid is required" in r.reason
+    # ... while a manifest that does not pin the consent CID is still checked.
+    r = rs.check(item(consent_cid=None, video_cid=None), fetch=fetcher())
+    assert r.status == rs.VALID and "legacy" not in r.reason
     assert "does not pin" in r.reason  # R1-17
 
 
@@ -157,7 +161,7 @@ def test_every_distribution_entry_is_checked_and_only_exact_fileobjects_kept():
         variants.append(fo)
     m = manifest(good, *variants)
     items = rs.items_from_manifest(m)
-    results = rs.check_all(items, fetch=fetcher(), list_consents=lambda d: [])
+    results = rs.check_all(items, fetch=fetcher())
     assert len(results) == 4
     assert results[0].status == rs.VALID
     assert [r.status for r in results[1:]] == [rs.INVALID] * 3
@@ -283,7 +287,7 @@ def test_write_rebuilds_entries_from_verified_records():
     m = manifest(fo)
     m["@context"] = copy.deepcopy(LEGACY_CONTEXTS[0])
     items = rs.items_from_manifest(m)
-    results = rs.check_all(items, fetch=fetcher(), list_consents=lambda d: [])
+    results = rs.check_all(items, fetch=fetcher())
     assert results[0].status == rs.VALID
     out = rs.filter_manifest(m, results, "now")
     assert out["distribution"] == [file_object()]
@@ -341,7 +345,7 @@ def test_edited_manifest_never_passes(edit, status):
 
 def test_list_item_in_terms_is_invalid_not_unknown():
     it = item(receipt_edits={"purposes": ["training", ["x"]]})
-    (r,) = rs.check_all([it], fetch=fetcher(), list_consents=lambda d: [])
+    (r,) = rs.check_all([it], fetch=fetcher())
     assert r.status == rs.INVALID
 
 
@@ -358,45 +362,34 @@ def test_legacy_receipt_without_new_fields_still_valid():
     assert rs.check(it, fetch=fetcher()).status == rs.VALID
 
 
-# ------------------------------------------------------------ supersession
+# ------------------------------------------- R1-01: the sidecar consent
 
 
-def test_superseded_by_newer_consent():
-    newer = consent_record(createdAt="2026-06-01T00:00:00Z", purposes=["evaluation"])
-    listing = lambda did: [(CURI, consent_record()), (CURI + "x", newer)]  # noqa: E731
-    r = rs.check(item(), fetch=fetcher(), list_consents=listing)
-    assert r.status == rs.MODIFIED and "superseded" in r.reason
-    # R2-02: an invalid newer consent grants nothing, and still supersedes.
-    invalid_newer = lambda did: [(CURI + "x", {**newer, "authorshipAttested": False})]  # noqa: E731
-    r = rs.check(item(), fetch=fetcher(), list_consents=invalid_newer)
-    assert r.status == rs.MODIFIED and "which is invalid" in r.reason
+def test_consent_not_keyed_to_its_video_is_invalid():
+    """A consent under any key but its video's is ignored: a manifest that
+    names one is INVALID (proven from the signed record, no listing)."""
+    other = f"at://{ALICE}/org.consentvid.consent/{K2}"
+
+    def fetch(at):
+        if str(at) == other:
+            return VerifiedRecord(other, True, CCID, consent_record(), "r", True)
+        return fetcher()(at)
+
+    r = rs.check(item(consent_uri=other), fetch=fetch)
+    assert r.status == rs.INVALID and "sidecar" in r.reason
 
 
-def test_equal_created_at_ties_break_on_rkey():
-    """R1-20: one total order (createdAt, rkey) everywhere."""
-    from consentvid.policy import latest_per_video
+def test_rewritten_consent_is_modified_via_its_cid():
+    r = rs.check(item(), fetch=fetcher(consent_cid="bafyrewritten"))
+    assert r.status == rs.MODIFIED and "changed since export" in r.reason
 
-    a_uri, b_uri = f"at://{ALICE}/org.consentvid.consent/a", f"at://{ALICE}/org.consentvid.consent/b"
-    same = consent_record()
-    best, superseded = latest_per_video([(b_uri, same), (a_uri, same)])
-    assert best[same["videoUri"]][0] == b_uri and superseded == [a_uri]
-    best, _ = latest_per_video([(a_uri, same), (b_uri, same)])
-    assert best[same["videoUri"]][0] == b_uri
 
-    listing = lambda did: [(a_uri, same), (b_uri, same)]  # noqa: E731
+def test_check_never_lists_the_repo():
+    """Supersession is gone: the verdict rests only on MST-proven reads."""
+    import inspect
 
-    def fetch_for(uri):
-        def fetch(at):
-            if str(at) == uri:
-                return VerifiedRecord(uri, True, CCID, same, "r", True)
-            return fetcher()(at)
-
-        return fetch
-
-    on_a = rs.check(item(consent_uri=a_uri), fetch=fetch_for(a_uri), list_consents=listing)
-    on_b = rs.check(item(consent_uri=b_uri), fetch=fetch_for(b_uri), list_consents=listing)
-    assert on_a.status == rs.MODIFIED and "superseded" in on_a.reason
-    assert on_b.status == rs.VALID
+    assert "list_consents" not in inspect.signature(rs.check).parameters
+    assert "list_consents" not in inspect.signature(rs.check_all).parameters
 
 
 # ------------------------------------------------------------------ errors
@@ -441,7 +434,7 @@ def test_one_bad_clip_does_not_abort_the_run(monkeypatch):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(rs, "check", explode)
-    results = rs.check_all([item(), item(id="y")], list_consents=lambda d: [])
+    results = rs.check_all([item(), item(id="y")])
     # Fail closed: an internal error is never "network, try again" (R1-04)
     assert [r.status for r in results] == [rs.INVALID, rs.INVALID]
 
@@ -501,8 +494,6 @@ def test_cli_resync_c2pa_file_fails_check(monkeypatch, tmp_path):
 
     monkeypatch.setattr(ce, "extract_consent_receipt", lambda p: (c2pa_receipt(), "Trusted"))
     monkeypatch.setattr(rs, "fetch_verified", fetcher())
-    monkeypatch.setattr(rs, "_list_consents", lambda did: [])
-    monkeypatch.setattr(rs.check_all, "__kwdefaults__", {"workers": 8, "list_consents": lambda d: []})
     real_check = rs.check
     monkeypatch.setattr(rs, "check", lambda it, **kw: real_check(it, **{**kw, "fetch": fetcher()}))
     f = tmp_path / "file.mp4"
@@ -517,7 +508,6 @@ def test_cli_resync_counts_every_entry(monkeypatch, tmp_path):
 
     real_check = rs.check
     monkeypatch.setattr(rs, "check", lambda it, **kw: real_check(it, **{**kw, "fetch": fetcher()}))
-    monkeypatch.setattr(rs.check_all, "__kwdefaults__", {"workers": 8, "list_consents": lambda d: []})
     m = manifest(file_object(), {**file_object(), "@id": "other", "@type": "cr:FileSet"})
     p = tmp_path / "m.json"
     p.write_text(json.dumps(m))
@@ -535,44 +525,26 @@ def test_cli_resync_counts_every_entry(monkeypatch, tmp_path):
         {"revocable": False},
         {"adultAttested": None},  # removed below
         {"peoplePresent": "noIdentifiablePeople", "modalities": ["video", "face"]},
-        {"createdAt": "yesterday"},  # unparseable: can't be ordered, fails closed
-        {"createdAt": "2020-01-01T00:00"},  # unparseable even though it looks older
-        {"createdAt": "2999-01-01T00:00:00Z"},  # future-dated (R2-13)
+        {"createdAt": "yesterday"},
         {"modelClasses": ["commercial\x1b[2K"]},
     ],
 )
-def test_invalid_newer_consent_still_supersedes(edit):
-    """R2-02: the contributor's newest record governs even if it is invalid;
-    it grants nothing, so the older broader consent must not stay VALID."""
-    newer = consent_record(**{"createdAt": "2026-06-01T00:00:00Z", **{k: v for k, v in edit.items() if v is not None}})
+def test_invalid_consent_is_invalid(edit):
+    bad = consent_record(**{k: v for k, v in edit.items() if v is not None})
     for k, v in edit.items():
         if v is None:
-            newer.pop(k)
-    listing = lambda did: [(CURI, consent_record()), (CURI + "x", newer)]  # noqa: E731
-    r = rs.check(item(), fetch=fetcher(), list_consents=listing)
-    assert r.status == rs.MODIFIED and "superseded" in r.reason and CURI + "x" in r.reason
-    assert "invalid" in r.reason
+            bad.pop(k)
+    r = rs.check(item(), fetch=fetcher(consent=bad))
+    assert r.status in (rs.INVALID, rs.MODIFIED)
+    assert r.status != rs.VALID
 
 
-def test_older_invalid_consent_does_not_supersede():
-    older = consent_record(createdAt="2025-01-01T00:00:00Z", authorshipAttested=False)
-    listing = lambda did: [(CURI, consent_record()), (CURI + "x", older)]  # noqa: E731
-    assert rs.check(item(), fetch=fetcher(), list_consents=listing).status == rs.VALID
+def test_future_created_at_is_informational_only():
+    """createdAt orders nothing any more: a future one is not an error."""
+    c = consent_record(createdAt="2999-01-01T00:00:00Z", expiresAt="2999-06-01T00:00:00Z")
+    from consentvid.validate import validate_in_repo
 
-
-def test_future_dated_newer_consent_is_named():
-    """R2-13: a future-dated record is itself invalid and supersedes; the
-    reason names it so the contributor can delete it."""
-    future = consent_record(createdAt="2999-01-01T00:00:00Z", expiresAt="2999-06-01T00:00:00Z")
-    listing = lambda did: [(CURI, consent_record()), (CURI + "future", future)]  # noqa: E731
-    r = rs.check(item(), fetch=fetcher(), list_consents=listing)
-    assert r.status == rs.MODIFIED and CURI + "future" in r.reason and "future" in r.reason
-
-
-def test_other_videos_consents_do_not_supersede():
-    other = consent_record(rkey="v2", createdAt="2026-06-01T00:00:00Z", authorshipAttested=False)
-    listing = lambda did: [(CURI, consent_record()), (CURI + "x", other)]  # noqa: E731
-    assert rs.check(item(), fetch=fetcher(), list_consents=listing).status == rs.VALID
+    assert validate_in_repo("org.consentvid.consent", c, ALICE, rkey=K1) == []
 
 
 # ------------------------------------------------ R2-01: encodingFormat
@@ -587,7 +559,7 @@ def test_ipfs_entry_on_git_lookalike_host_with_git_encoding_is_dropped():
     fo["encodingFormat"] = "git+https"
     m = manifest(fo)
     (it,) = rs.items_from_manifest(m)
-    results = rs.check_all([it], fetch=fetcher(video=video), list_consents=lambda d: [])
+    results = rs.check_all([it], fetch=fetcher(video=video))
     assert results[0].status == rs.MODIFIED
     assert rs.filter_manifest(m, results, "now")["distribution"] == []
 
@@ -660,7 +632,7 @@ def legacy_manifest():
         receipt.pop(k)
     legacy = {
         "@type": "cr:FileObject",
-        "@id": "video-v1",
+        "@id": f"video-{K1}",
         "name": fo["name"],
         "description": fo["description"],
         "contentUrl": fo["contentUrl"],
@@ -680,7 +652,7 @@ def legacy_manifest():
 def test_legacy_manifest_still_valid():
     (it,) = rs.items_from_manifest(legacy_manifest())
     assert it.legacy and it.problem is None
-    r = rs.check(it, fetch=fetcher(), list_consents=lambda d: [])
+    r = rs.check(it, fetch=fetcher())
     assert r.status == rs.VALID, r
 
 
@@ -704,7 +676,8 @@ def test_relative_iri_aliases_are_invalid():
 
 @pytest.mark.parametrize(
     "bad_id",
-    [f"{ALICE}/v2", f"{BOB}/v1", "video-v1", f"{ALICE}/v1/", f"./{ALICE}/v1", f"{ALICE}/./v1", f"{ALICE.upper()}/v1"],
+    [f"{ALICE}/{K2}", f"{BOB}/{K1}", f"video-{K1}", f"{ALICE}/{K1}/", f"./{ALICE}/{K1}", f"{ALICE}/./{K1}",
+     f"{ALICE.upper()}/{K1}"],
 )
 def test_non_canonical_id_is_invalid(bad_id):
     (it,) = rs.items_from_manifest(manifest({**file_object(), "@id": bad_id}))
@@ -714,7 +687,7 @@ def test_non_canonical_id_is_invalid(bad_id):
 
 def test_canonical_id_is_valid():
     (it,) = rs.items_from_manifest(manifest(file_object()))
-    assert it.id == f"{ALICE}/v1" and rs.check(it, fetch=fetcher()).status == rs.VALID
+    assert it.id == f"{ALICE}/{K1}" and rs.check(it, fetch=fetcher()).status == rs.VALID
 
 
 # --------------------------------- R2-03: --write carries only signed data
@@ -798,11 +771,11 @@ def test_write_rebuilds_dataset_level_claims_from_verified_clips():
     m["citeAs"] = "whatever"
     m["name"] = "my dataset"
     m["version"] = "2.0.0"
-    results = rs.check_all(rs.items_from_manifest(m), fetch=fetcher(), list_consents=lambda d: [])
+    results = rs.check_all(rs.items_from_manifest(m), fetch=fetcher())
     assert [r.status for r in results] == [rs.VALID]
     out = rs.filter_manifest(m, results, "now")
     fresh, _ = build_manifest([clip()], name="my dataset", version="2.0.0")
-    assert out["creator"] == [{"@type": "sc:Person", "name": ALICE, "identifier": ALICE}]
+    assert out["creator"] == [{"@type": "sc:Person", "name": ALICE, "identifier": ALICE, "sameAs": f"at://{ALICE}"}]
     assert out["rai:dataUseCases"] == fresh["rai:dataUseCases"]
     assert "commercial" not in json.dumps(out["rai:dataUseCases"])
     assert out["rai:dataLimitations"] == fresh["rai:dataLimitations"]
@@ -865,7 +838,6 @@ def test_cli_resync_escapes_control_characters(monkeypatch, tmp_path):
 
     real_check = rs.check
     monkeypatch.setattr(rs, "check", lambda it, **kw: real_check(it, **{**kw, "fetch": fetcher()}))
-    monkeypatch.setattr(rs.check_all, "__kwdefaults__", {"workers": 8, "list_consents": lambda d: []})
     evil = "\r\x1b[2K  [      ok] all good\x1b]52;c;cHduZWQ=\x07‮ "
     good = file_object()
     # second entry: non-canonical @id -> INVALID, with the @id in the reason
@@ -878,3 +850,168 @@ def test_cli_resync_escapes_control_characters(monkeypatch, tmp_path):
         assert ch not in out, (ch, out)
     assert "\\x1b" in out and "\\x0d" in out
     assert "1 of 2 clip(s) must be dropped" in out
+
+
+# ------------------------- R2-15: relay-level takedowns make clips unavailable
+
+
+def _relay_env(monkeypatch, answer):
+    from consentvid import appview as av
+    from consentvid import resync as rs_mod
+
+    calls = []
+
+    def relay_repo_status(relay, did):
+        calls.append(did)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(av, "relay_repo_status", relay_repo_status)
+    monkeypatch.setattr(rs_mod, "_relay_lookup", rs_mod._relay_lookup_impl)
+    rs_mod.clear_relay_cache()
+    return calls
+
+
+def _valid_clip_fetch():
+    from consentvid.verify import VerifiedRecord
+
+    consent = consent_record()
+    video = video_record()
+
+    def fetch(at):
+        if at.collection == "org.consentvid.consent":
+            return VerifiedRecord(str(at), True, "bafyc1", consent, "3maaaaaaaaaa2", True)
+        return VerifiedRecord(str(at), True, VIDEO_CID, video, "3maaaaaaaaaa2", True)
+
+    return fetch
+
+
+def _clip_item():
+    from consentvid.croissant import Clip, _file_object
+
+    clip = Clip(f"at://{ALICE}/org.consentvid.consent/{K1}", "bafyc1", consent_record(),
+                f"at://{ALICE}/org.consentvid.video/{K1}", VIDEO_CID, video_record(), ALICE)
+    fo = _file_object(clip)
+    return rs.items_from_manifest({**_manifest_shell(), "distribution": [fo]})[0]
+
+
+def _manifest_shell():
+    from consentvid.croissant import build_manifest
+
+    m, _ = build_manifest([], name="t")
+    return {k: v for k, v in m.items() if k != "distribution"}
+
+
+@pytest.mark.parametrize(
+    "answer, status",
+    [
+        ((False, "takendown"), rs.UNAVAILABLE),
+        ((False, "deleted"), rs.UNAVAILABLE),
+        ((True, None), rs.VALID),
+        ("not-found", rs.VALID),
+        (OSError("relay down"), rs.VALID),
+    ],
+)
+def test_relay_status_gates_otherwise_valid_clips(monkeypatch, answer, status):
+    from consentvid.errors import RepoUnavailable
+
+    if answer == "not-found":
+        answer = RepoUnavailable(ALICE, "not-found")
+    calls = _relay_env(monkeypatch, answer)
+    r = rs.check(_clip_item(), fetch=_valid_clip_fetch())
+    assert r.status == status, r.reason
+    if status == rs.UNAVAILABLE:
+        assert "relay reports account" in r.reason
+    assert calls == [ALICE]
+
+
+def test_no_relay_status_skips_the_lookup(monkeypatch):
+    calls = _relay_env(monkeypatch, (False, "takendown"))
+    assert rs.check(_clip_item(), fetch=_valid_clip_fetch(), relay_status=False).status == rs.VALID
+    assert calls == []
+
+
+def test_one_relay_call_per_did_across_check_all(monkeypatch):
+    calls = _relay_env(monkeypatch, (True, None))
+    results = rs.check_all([_clip_item() for _ in range(6)], fetch=_valid_clip_fetch(), workers=4)
+    assert {r.status for r in results} == {rs.VALID} and calls == [ALICE]
+
+
+# ------------------------- R3-01: relay processing statuses are not account statuses
+
+
+@pytest.mark.parametrize("status", ["throttled", "host-throttled", "desynchronized"])
+def test_relay_operational_status_keeps_a_proven_clip_valid(monkeypatch, status):
+    calls = _relay_env(monkeypatch, (False, status))
+    r = rs.check(_clip_item(), fetch=_valid_clip_fetch())
+    assert r.status == rs.VALID and r.verified, r.reason
+    assert f"relay reports {status}; live index may be stale" in r.reason
+    assert calls == [ALICE]
+
+
+@pytest.mark.parametrize("status", ["takendown", "mystery", None])
+def test_relay_account_or_unknown_status_still_fails_closed(monkeypatch, status):
+    _relay_env(monkeypatch, (False, status))
+    r = rs.check(_clip_item(), fetch=_valid_clip_fetch())
+    assert r.status == rs.UNAVAILABLE and "relay reports account" in r.reason
+
+
+# ------------------------- R3-12: a 5xx PDS plus a relay that knows the account is gone
+
+
+def _failing_fetch(exc):
+    def fetch(at):
+        raise exc
+
+    return fetch
+
+
+def _http_500():
+    import httpx
+
+    req = httpx.Request("GET", "https://pds.example/xrpc/com.atproto.sync.getRecord")
+    return httpx.HTTPStatusError("500", request=req, response=httpx.Response(500, request=req))
+
+
+def test_pds_500_and_relay_deleted_is_unavailable_not_revoked(monkeypatch):
+    calls = _relay_env(monkeypatch, (False, "deleted"))
+    r = rs.check(_clip_item(), fetch=_failing_fetch(_http_500()))
+    assert r.status == rs.UNAVAILABLE and not r.verified
+    assert r.reason == "PDS unreachable; relay reports account deleted"
+    assert calls == [ALICE]
+
+
+@pytest.mark.parametrize("answer", [(False, "throttled"), "not-found", OSError("relay down"), (True, None)])
+def test_pds_500_without_an_account_answer_stays_unknown(monkeypatch, answer):
+    from consentvid.errors import RepoUnavailable
+
+    if answer == "not-found":
+        answer = RepoUnavailable(ALICE, "not-found")
+    _relay_env(monkeypatch, answer)
+    assert rs.check(_clip_item(), fetch=_failing_fetch(_http_500())).status == rs.UNKNOWN
+
+
+def test_pds_network_error_on_the_video_asks_the_relay_too(monkeypatch):
+    _relay_env(monkeypatch, (False, "takendown"))
+    ok = _valid_clip_fetch()
+
+    def fetch(at):
+        if at.collection == "org.consentvid.video":
+            raise OSError("down")
+        return ok(at)
+
+    # The consent read succeeded, so the relay's takedown already applies.
+    assert rs.check(_clip_item(), fetch=fetch).status == rs.UNAVAILABLE
+
+
+def test_pds_failure_skips_the_relay_when_disabled(monkeypatch):
+    calls = _relay_env(monkeypatch, (False, "deleted"))
+    r = rs.check(_clip_item(), fetch=_failing_fetch(_http_500()), relay_status=False)
+    assert r.status == rs.UNKNOWN and calls == []
+
+
+def test_pds_failures_ask_the_relay_once_per_did(monkeypatch):
+    calls = _relay_env(monkeypatch, (False, "suspended"))
+    results = rs.check_all([_clip_item() for _ in range(5)], fetch=_failing_fetch(OSError("down")), workers=3)
+    assert {r.status for r in results} == {rs.UNAVAILABLE} and calls == [ALICE]

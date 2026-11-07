@@ -7,7 +7,7 @@ import pytest
 from atproto_core.did_doc import DidDocument
 from atproto_identity.exceptions import DidPlcResolverError
 
-from conftest import ALICE
+from conftest import ALICE, K1
 from consentvid import identity
 from consentvid import resync as rs
 from consentvid.errors import RepoUnavailable
@@ -195,7 +195,7 @@ def test_deleted_did_makes_resync_revoked(resolver):
 
     resolver.doc = None
     it = rs.Item(
-        id="x", name="x", consent_uri=f"at://{ALICE}/org.consentvid.consent/c1", sha256="ab" * 32,
+        id="x", name="x", consent_uri=f"at://{ALICE}/org.consentvid.consent/{K1}", sha256="ab" * 32,
         content_url="https://example.org/v", receipt={},
     )
     r = rs.check(it, fetch=fetch_verified)
@@ -214,10 +214,60 @@ def test_pds_port_allowed_only_with_insecure_escape_hatch(resolver, monkeypatch)
     assert identity.resolve_identity(ALICE).pds == "https://pds.example.com:2583"
 
 
-def test_handle_resolving_to_private_address_is_not_contacted(resolver, dns):
-    dns["alice.example.com"] = "10.0.0.5"
+def test_handle_txt_verifies_even_if_the_handle_host_is_private(resolver, dns):
+    """R2-11: the DNS TXT method never contacts the handle host, so its A
+    record doesn't matter (the HTTPS method checks every host it contacts)."""
+    dns["alice.example.com"] = "100.64.0.1"
     resolver.doc = doc()
-    assert identity.resolve_identity(ALICE).handle is None and resolver.handle_calls == []
+    assert identity.verified_handle(ALICE) == "alice.example.com"
+    assert resolver.handle_calls == ["alice.example.com"]
+
+
+def test_resolve_identity_makes_no_handle_lookups(resolver, monkeypatch):
+    """R2-11: reading a repo needs the PDS and key only."""
+    resolver.doc = doc()
+    monkeypatch.setattr(identity, "_resolve_handle", lambda h: pytest.fail("handle lookup"))
+    ident = identity.resolve_identity(ALICE)
+    assert ident.pds == "https://pds.example.com" and ident.claimed_handle == "alice.example.com"
+    assert identity.display_name  # (display_name verifies; see below)
+
+
+def test_display_name_uses_only_verified_handles(resolver, monkeypatch):
+    resolver.doc = doc()
+    monkeypatch.setattr(identity, "_resolve_handle", lambda h: "did:plc:someoneelse0000000000000")
+    assert identity.display_name(ALICE) == ALICE
+    identity.verified_handle.cache_clear()
+    monkeypatch.setattr(identity, "_resolve_handle", lambda h: ALICE)
+    assert identity.display_name(ALICE) == "alice.example.com"
+
+
+@pytest.mark.parametrize("did", ["did:web:pds.example", "did:web:x.test", "did:web:x.alt", "did:web:x.onion"])
+def test_did_web_reserved_tlds_refused(resolver, did, monkeypatch):
+    """R2-12: the handle TLD restrictions apply to did:web domains."""
+    monkeypatch.setattr(httpx.Client, "send", lambda self, req, **k: pytest.fail("sent"))
+    with pytest.raises(RepoUnavailable) as ei:
+        identity.resolve_identity(did)
+    assert ei.value.status == "invalid"
+
+
+@pytest.mark.parametrize(
+    "pds, ok",
+    [
+        ("https://pds.example.com/some/path", False),
+        ("https://pds.example.com/?x=1", False),
+        ("https://pds.example.com/#frag", False),
+        ("https://pds.example.com?", False),
+        ("https://pds.example.com/", True),
+        ("https://pds.example.com", True),
+    ],
+)
+def test_pds_endpoint_must_be_an_origin(monkeypatch, pds, ok):
+    monkeypatch.setattr(identity, "_check_public_host", lambda host: None)
+    if ok:
+        identity._check_pds(pds)
+    else:
+        with pytest.raises(ValueError, match="origin"):
+            identity._check_pds(pds)
 
 
 # ------------------------------------- R2-04: bounded answers from a PDS
@@ -329,7 +379,7 @@ def test_oversized_answer_makes_resync_invalid_not_unknown():
         return client.com.atproto.sync.get_record({"did": at.did, "collection": at.collection, "rkey": at.rkey})
 
     it = rs.Item(
-        id="x", name="x", consent_uri=f"at://{ALICE}/org.consentvid.consent/c1", sha256="ab" * 32,
+        id="x", name="x", consent_uri=f"at://{ALICE}/org.consentvid.consent/{K1}", sha256="ab" * 32,
         content_url="https://example.org/v", receipt={},
     )
     r = rs.check(it, fetch=fetch)
@@ -378,28 +428,6 @@ def test_page_cap_and_oversized_pages():
         identity.list_all(big, ALICE, "org.consentvid.consent")
     ok = _Pages([([_rec(1)], "a"), ([_rec(2)], "b"), ([], None)])
     assert [r.uri[-2:] for r in identity.list_all(ok, ALICE, "org.consentvid.consent")] == ["r1", "r2"]
-
-
-def test_looping_consent_list_makes_resync_invalid(monkeypatch):
-    from conftest import consent_record, video_record
-    from consentvid.croissant import Clip, _file_object, build_manifest
-    from consentvid.verify import VerifiedRecord
-
-    curi, vuri = f"at://{ALICE}/org.consentvid.consent/c1", f"at://{ALICE}/org.consentvid.video/v1"
-    clip = Clip(curi, "bafyc", consent_record(), vuri, "bafyv", video_record(), ALICE)
-    m, _ = build_manifest([clip], name="t")
-    (it,) = rs.items_from_manifest(m)
-
-    def fetch(at):
-        u = str(at)
-        return VerifiedRecord(u, True, "bafyc" if u == curi else "bafyreie7sjgnuat5jzpmmnv6wr6hiyvpa4upftobv2rllnci5pleenf2xq",
-                              consent_record() if u == curi else video_record(), "r", True)
-
-    pds = _Pages([([_rec(1)], "same")])
-    monkeypatch.setattr(identity, "public_client", lambda did: pds)
-    r = rs.check(it, fetch=fetch, list_consents=rs._list_consents)
-    assert r.status == rs.INVALID and "repeated" in r.reason
-    assert _file_object(clip)  # sanity
 
 
 def test_did_web_document_is_fetched_with_the_capped_client(monkeypatch):
@@ -534,7 +562,7 @@ def test_slow_headers_make_resync_invalid(monkeypatch, dns):
         return client.com.atproto.sync.get_record({"did": at.did, "collection": at.collection, "rkey": at.rkey})
 
     it = rs.Item(
-        id="x", name="x", consent_uri=f"at://{ALICE}/org.consentvid.consent/c1", sha256="ab" * 32,
+        id="x", name="x", consent_uri=f"at://{ALICE}/org.consentvid.consent/{K1}", sha256="ab" * 32,
         content_url="https://example.org/v", receipt={},
     )
     try:
@@ -542,3 +570,287 @@ def test_slow_headers_make_resync_invalid(monkeypatch, dns):
     finally:
         stop.set()
     assert r.status == rs.INVALID and "ResponseTooLarge" in r.reason
+
+
+# ------------------------------- R1-05: handle resolution per the handle spec
+
+
+def test_dns_txt_needs_exactly_one_valid_did(monkeypatch):
+    txt = {}
+    monkeypatch.setattr(identity, "_txt_records", lambda name: txt.get(name, []))
+    txt["_atproto.alice.example.com"] = [f"did={ALICE}", "did=did:plc:someoneelseentirely00"]
+    assert identity._resolve_handle_dns("alice.example.com") is None  # conflicting
+    txt["_atproto.alice.example.com"] = ["did=junk", "v=spf1"]
+    assert identity._resolve_handle_dns("alice.example.com") is None
+    txt["_atproto.alice.example.com"] = [f"did={ALICE}", f"did={ALICE}", "other"]
+    assert identity._resolve_handle_dns("alice.example.com") == ALICE
+
+
+def test_split_txt_strings_are_joined(monkeypatch):
+    import dns.resolver
+
+    rdata = SimpleNamespace(strings=[b"did=did:plc:alice", b"aaaaaaaaaaaaaaaaaaa"])
+    monkeypatch.setattr(dns.resolver, "resolve", lambda name, rtype, lifetime=None: [rdata])
+    assert identity._txt_records("_atproto.alice.example.com") == ["did=did:plc:aliceaaaaaaaaaaaaaaaaaaa"]
+
+
+def _https(monkeypatch, routes):
+    """identity._http() answers from ``routes``: url -> (status, headers, body)."""
+    seen = []
+
+    def handler(request):
+        url = str(request.url)
+        seen.append(url)
+        status, headers, body = routes.get(url, (404, {}, b""))
+        return httpx.Response(status, headers=headers, content=body)
+
+    monkeypatch.setattr(identity, "_http", lambda: httpx.Client(transport=httpx.MockTransport(handler)))
+    return seen
+
+
+WK = "/.well-known/atproto-did"
+
+
+def test_https_redirect_is_followed(monkeypatch):
+    seen = _https(
+        monkeypatch,
+        {
+            f"https://alice.example.com{WK}": (301, {"location": f"https://www.alice.example.com{WK}"}, b""),
+            f"https://www.alice.example.com{WK}": (200, {}, f"{ALICE}\n".encode()),
+        },
+    )
+    assert identity._resolve_handle_https("alice.example.com") == ALICE and len(seen) == 2
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        f"http://www.alice.example.com{WK}",  # downgrade
+        f"https://internal.example.com{WK}",  # resolves to a private address (below)
+        f"https://user@www.alice.example.com{WK}",
+        f"https://www.alice.example.com:8443{WK}",
+        f"https://10.0.0.1{WK}",
+    ],
+)
+def test_unsafe_redirects_are_refused(monkeypatch, dns, location):
+    dns["internal.example.com"] = "10.1.2.3"
+    seen = _https(
+        monkeypatch,
+        {
+            f"https://alice.example.com{WK}": (302, {"location": location}, b""),
+            location: (200, {}, ALICE.encode()),
+        },
+    )
+    assert identity._resolve_handle_https("alice.example.com") is None
+    assert seen == [f"https://alice.example.com{WK}"]
+
+
+def test_too_many_redirects_are_refused(monkeypatch):
+    hosts = [f"h{i}.alice.example.com" for i in range(5)]
+    routes = {f"https://{a}{WK}": (307, {"location": f"https://{b}{WK}"}, b"") for a, b in zip(hosts, hosts[1:], strict=False)}
+    routes[f"https://alice.example.com{WK}"] = (307, {"location": f"https://{hosts[0]}{WK}"}, b"")
+    routes[f"https://{hosts[-1]}{WK}"] = (200, {}, ALICE.encode())
+    _https(monkeypatch, routes)
+    assert identity._resolve_handle_https("alice.example.com") is None
+
+
+def test_first_valid_also_known_as_handle_is_used_lowercased(resolver):
+    raw = {
+        "@context": ["https://www.w3.org/ns/did/v1"],
+        "id": ALICE,
+        "alsoKnownAs": ["at://did:plc:x", "at://Alice.Example.COM", "at://bob.example.com"],
+        "verificationMethod": [
+            {"id": f"{ALICE}#atproto", "type": "Multikey", "controller": ALICE, "publicKeyMultibase": KEY}
+        ],
+        "service": [{"id": "#atproto_pds", "type": "AtprotoPersonalDataServer", "serviceEndpoint": "https://pds.example.com"}],
+    }
+    resolver.doc = DidDocument.from_dict(raw)
+    ident = identity.resolve_identity(ALICE)
+    assert ident.handle == "alice.example.com" and resolver.handle_calls == ["alice.example.com"]
+
+
+def test_reserved_tld_handle_claim_is_never_verified(resolver):
+    resolver.doc = doc(handle="alice.local")
+    assert identity.resolve_identity(ALICE).handle is None and resolver.handle_calls == []
+
+
+def test_conflicting_lexicon_txt_records(monkeypatch):
+    from consentvid import lexicons as lx
+
+    monkeypatch.setattr(lx, "lexicon_txt_values", lambda nsid: [f"did={ALICE}", "did=did:plc:other0000000000000000000"])
+    assert lx.resolve_did_via_dns("org.consentvid.consent") is None
+    with pytest.raises(lx.ConflictingLexiconRecords):
+        lx.resolve_did_via_dns("org.consentvid.consent", strict=True)
+    monkeypatch.setattr(lx, "lexicon_txt_values", lambda nsid: ["did=junk", f"did={ALICE}"])
+    assert lx.resolve_did_via_dns("org.consentvid.consent") == ALICE
+
+
+def test_identity_cache_expires_and_can_be_invalidated(resolver, monkeypatch):
+    resolver.doc = doc()
+    calls = []
+    real = identity._resolve_identity
+    monkeypatch.setattr(identity, "_resolve_identity", lambda did: calls.append(did) or real(did))
+    identity.resolve_identity(ALICE)
+    identity.resolve_identity(ALICE)
+    assert len(calls) == 1
+    identity.invalidate_identity(ALICE)
+    identity.resolve_identity(ALICE)
+    assert len(calls) == 2
+    monkeypatch.setattr(identity, "IDENTITY_TTL", -1)
+    identity.resolve_identity(ALICE)
+    assert len(calls) == 3
+
+
+# ------------------------- R3-09: DID resolution is retried like other reads
+
+
+def _plc_error(status):
+    req = httpx.Request("GET", f"https://plc.directory/{ALICE}")
+    err = DidPlcResolverError("Error resolving DID")
+    err.__cause__ = httpx.HTTPStatusError(str(status), request=req, response=httpx.Response(status, request=req))
+    return err
+
+
+def test_plc_503_then_200_resolves(monkeypatch):
+    calls, sleeps = [], []
+    monkeypatch.setattr(identity, "_sleep", sleeps.append)
+
+    def resolve(did):
+        calls.append(did)
+        if len(calls) == 1:
+            raise _plc_error(503)
+        return "the document"
+
+    monkeypatch.setattr(identity, "_resolver", lambda: SimpleNamespace(did=SimpleNamespace(resolve=resolve)))
+    assert identity._resolve_doc(ALICE) == "the document"
+    assert len(calls) == 2 and len(sleeps) == 1
+
+
+def test_plc_410_is_deleted_without_retrying(monkeypatch):
+    calls = []
+
+    def resolve(did):
+        calls.append(did)
+        raise _plc_error(410)
+
+    monkeypatch.setattr(identity, "_resolver", lambda: SimpleNamespace(did=SimpleNamespace(resolve=resolve)))
+    with pytest.raises(RepoUnavailable) as ei:
+        identity._resolve_doc(ALICE)
+    assert ei.value.status == "deleted" and len(calls) == 1
+
+
+def test_wrapped_http_statuses_decide_transience():
+    assert identity.status_of(_plc_error(503)) == 503
+    assert identity._is_transient_error(_plc_error(503))
+    assert not identity._is_transient_error(_plc_error(404))
+    assert not identity._is_transient_error(_plc_error(410))
+    err = DidPlcResolverError("x")
+    err.__cause__ = httpx.ConnectError("down", request=httpx.Request("GET", "https://plc.directory/x"))
+    assert identity._is_transient_error(err)
+
+
+# ------------------------- R3-08: a failed handle lookup is not "unverified"
+
+
+def _real_handle_methods(monkeypatch, resolver):
+    def resolve(did):
+        return resolver.doc
+
+    fake = SimpleNamespace(did=SimpleNamespace(resolve=resolve), handle=SimpleNamespace(resolve_dns=None))
+    monkeypatch.setattr(identity, "_resolver", lambda: fake)
+    identity.verified_handle.cache_clear()
+
+
+def test_dns_timeout_in_verified_handle_is_not_cached(monkeypatch, resolver):
+    import dns.exception
+    import dns.resolver
+
+    resolver.doc = doc()
+    _real_handle_methods(monkeypatch, resolver)
+    _https(monkeypatch, {})  # the well-known method answers 404
+    calls = []
+
+    def resolve(name, rtype, lifetime=None):
+        calls.append(name)
+        if len(calls) == 1:
+            raise dns.exception.Timeout()
+        return [SimpleNamespace(strings=[f"did={ALICE}".encode()])]
+
+    monkeypatch.setattr(dns.resolver, "resolve", resolve)
+    assert identity.verified_handle(ALICE) is None  # unknown this time ...
+    assert identity.verified_handle(ALICE) == "alice.example.com"  # ... retried, not cached
+    with pytest.raises(identity.HandleLookupError):
+        calls.clear()
+        identity.verified_handle.cache_clear()
+        identity.verified_handle(ALICE, raise_errors=True)
+    identity.verified_handle.cache_clear()
+
+
+def test_nxdomain_and_https_404_is_a_cached_negative(monkeypatch, resolver):
+    import dns.resolver
+
+    resolver.doc = doc()
+    _real_handle_methods(monkeypatch, resolver)
+    seen = _https(monkeypatch, {})
+    calls = []
+
+    def resolve(name, rtype, lifetime=None):
+        calls.append(name)
+        raise dns.resolver.NXDOMAIN()
+
+    monkeypatch.setattr(dns.resolver, "resolve", resolve)
+    assert identity.verified_handle(ALICE) is None
+    assert identity.verified_handle(ALICE) is None
+    assert len(calls) == 1 and len(seen) == 1  # the definite answer was cached
+    identity.verified_handle.cache_clear()
+
+
+@pytest.mark.parametrize("answer", ["servfail", "timeout"])
+def test_dns_errors_raise_instead_of_answering_none(monkeypatch, answer):
+    import dns.exception
+    import dns.resolver
+
+    exc = dns.resolver.NoNameservers() if answer == "servfail" else dns.exception.Timeout()
+    monkeypatch.setattr(dns.resolver, "resolve", lambda *a, **k: (_ for _ in ()).throw(exc))
+    with pytest.raises(identity.HandleLookupError):
+        identity._txt_records("_atproto.alice.example.com")
+
+
+def test_https_5xx_and_transport_errors_raise_but_4xx_is_an_answer(monkeypatch):
+    _https(monkeypatch, {f"https://alice.example.com{WK}": (503, {}, b"")})
+    with pytest.raises(identity.HandleLookupError):
+        identity._resolve_handle_https("alice.example.com")
+    _https(monkeypatch, {f"https://alice.example.com{WK}": (404, {}, b"")})
+    assert identity._resolve_handle_https("alice.example.com") is None
+
+    def refuse(request):
+        raise httpx.ConnectError("refused", request=request)
+
+    monkeypatch.setattr(identity, "_http", lambda: httpx.Client(transport=httpx.MockTransport(refuse)))
+    with pytest.raises(identity.HandleLookupError):
+        identity._resolve_handle_https("alice.example.com")
+
+
+def test_embed_warns_when_the_handle_lookup_failed(capsys):
+    from consentvid import cli
+
+    def failing(did):
+        raise identity.HandleLookupError("DNS lookup of _atproto.alice.example.com failed (Timeout)")
+
+    assert cli._verified_handle(ALICE, failing) is None
+    assert "handle not included: lookup failed (DNS lookup" in capsys.readouterr().err
+
+
+# ------------------------- R3-04: the client always matches the identity
+
+
+def test_public_client_follows_the_identity_after_it_expires(resolver):
+    resolver.doc = doc(pds="https://old.example.com")
+    assert identity.public_client(ALICE)._base_url.startswith("https://old.example.com")
+    resolver.doc = doc(pds="https://new.example.com")
+    identity._identities.pop(ALICE)  # what IDENTITY_TTL expiry does
+    assert identity.resolve_identity(ALICE).pds == "https://new.example.com"
+    assert identity.public_client(ALICE)._base_url.startswith("https://new.example.com")
+    # Invalidating an identity keeps per-PDS clients (they stay correct).
+    identity.invalidate_identity(ALICE)
+    assert identity.client_for("https://old.example.com") is identity.client_for("https://old.example.com")

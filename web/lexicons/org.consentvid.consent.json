@@ -4,7 +4,7 @@
   "defs": {
     "main": {
       "type": "record",
-      "description": "A consent receipt declaring permissions for AI training use of a referenced video record. Cryptographically signed by the user's repo key (inherent to ATproto records).",
+      "description": "A consent receipt declaring permissions for AI training use of a referenced video record. Cryptographically signed by the user's repo key (inherent to ATproto records). The record key MUST equal the record key of the referenced org.consentvid.video record (a sidecar record, like app.bsky.feed.threadgate); consents with any other key are ignored. There is therefore at most one consent per video; replacing terms rewrites this record, and deleting it withdraws consent. Readers treat a consent as invalid unless videoCid is present, revocable, authorshipAttested and adultAttested are all true and peoplePresent is one of its knownValues (readers reject other values). Vocabulary values (modalities, purposes, modelClasses, compensation, rightsBasis, captureProvenance, peoplePresent) must not contain control or format characters.",
       "key": "tid",
       "record": {
         "type": "object",
@@ -22,12 +22,12 @@
           "videoUri": {
             "type": "string",
             "format": "at-uri",
-            "description": "AT-URI of the org.consentvid.video record this consent applies to. Must be in the same repo as this consent."
+            "description": "AT-URI of the org.consentvid.video record this consent applies to. Must be the DID-form at://<did>/org.consentvid.video/<rkey> in the same repo as this consent, with the same record key; handle-form URIs are invalid."
           },
           "videoCid": {
             "type": "string",
             "format": "cid",
-            "description": "CID of the exact org.consentvid.video record version this consent applies to (together with videoUri, a strong reference). If the video record is later rewritten, this consent no longer applies to it."
+            "description": "CID of the exact org.consentvid.video record version this consent applies to (together with videoUri, a strong reference): CIDv1 (dag-cbor, sha-256) in base32, exactly as returned by the PDS. If the video record is later rewritten, this consent no longer applies to it. Optional in the schema for evolution compatibility, but readers treat a consent without it as invalid."
           },
           "modalities": {
             "type": "array",
@@ -41,7 +41,8 @@
                 "face",
                 "voice"
               ]
-            }
+            },
+            "description": "What may be used: 'video' = the picture; 'audio' = the soundtrack; 'transcript' = text derived from the speech; 'face' = identifiable faces (e.g. for face recognition or synthesis); 'voice' = identifiable voices (e.g. for speaker recognition or voice cloning). 'face' and 'voice' are incompatible with peoplePresent 'noIdentifiablePeople'. No duplicate values."
           },
           "purposes": {
             "type": "array",
@@ -55,7 +56,7 @@
                 "researchOnly"
               ]
             },
-            "description": "What the data may be used FOR. 'researchOnly' is DEPRECATED: it overlaps the 'academic' model class (who may use it); new clients don't offer it, but it remains valid in existing records."
+            "description": "What the data may be used FOR. 'researchOnly' is DEPRECATED: it overlaps the 'academic' model class (who may use it); new clients don't offer it, but it remains valid in existing records. No duplicate values."
           },
           "modelClasses": {
             "type": "array",
@@ -69,12 +70,12 @@
                 "foundationModel"
               ]
             },
-            "description": "WHO may use the data, and under what release model. 'foundationModel' is DEPRECATED: it describes a kind of model, not a user; new clients don't offer it, but it remains valid in existing records."
+            "description": "WHO may use the data, and under what release model. 'foundationModel' is DEPRECATED: it describes a kind of model, not a user; new clients don't offer it, but it remains valid in existing records. No duplicate values."
           },
           "expiresAt": {
             "type": "string",
             "format": "datetime",
-            "description": "Optional expiry; after this time the consent is no longer valid."
+            "description": "Optional expiry; after this time the consent is no longer valid. Must be later than createdAt."
           },
           "compensation": {
             "type": "string",
@@ -126,7 +127,8 @@
           },
           "createdAt": {
             "type": "string",
-            "format": "datetime"
+            "format": "datetime",
+            "description": "Record write time. Informational: there is only ever one consent per video."
           }
         }
       }

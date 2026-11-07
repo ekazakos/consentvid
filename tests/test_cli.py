@@ -7,7 +7,7 @@ import click
 import pytest
 from click.testing import CliRunner
 
-from conftest import ALICE, BOB, VIDEO_CID, video_record
+from conftest import ALICE, BOB, K0, K1, K2, VIDEO_CID, video_record
 from consentvid import cli
 from consentvid.errors import ConsentVidError
 
@@ -26,8 +26,8 @@ TERMS = dict(
 )
 
 
-def run(*args):
-    return CliRunner().invoke(cli.main, list(args))
+def run(*args, input=None):  # noqa: A002 — CliRunner's name
+    return CliRunner().invoke(cli.main, list(args), input=input)
 
 
 def test_every_command_has_help():
@@ -123,7 +123,7 @@ def test_expiry_parsing(value, ok):
             cli._parse_expiry(value)
 
 
-def _add_video(fake_client, rkey="v1", **kw):
+def _add_video(fake_client, rkey=K1, **kw):
     fake_client.repo.records[("org.consentvid.video", rkey)] = (VIDEO_CID, video_record(**kw))
     return f"at://{ALICE}/org.consentvid.video/{rkey}"
 
@@ -132,18 +132,40 @@ def test_attach_pins_video_version_and_is_one_per_video(fake_client):
     vuri = _add_video(fake_client)
     uri, cid, rec, replaced = cli._attach(fake_client, vuri, replace=False, validate=None, **TERMS)
     assert rec["videoCid"] == VIDEO_CID and rec["revocable"] is True and not replaced
-    assert "validate" not in fake_client.repo.calls[-1][1]  # PDS default policy
+    op, params = fake_client.repo.calls[-1]
+    assert op == "create" and params["rkey"] == K1  # the video's own key: a sidecar (R1-01)
+    assert uri == f"at://{ALICE}/org.consentvid.consent/{K1}"
+    assert "validate" not in params  # PDS default policy
     with pytest.raises(ConsentVidError, match="already has consent"):
         cli._attach(fake_client, vuri, replace=False, validate=None, **TERMS)
     uri2, _, _, replaced = cli._attach(
         fake_client, vuri, replace=True, validate=None, **{**TERMS, "purposes": ("evaluation",)}
     )
     assert replaced and uri2 == uri  # same record, new version
+    op, params = fake_client.repo.calls[-1]
+    assert op == "put" and params["swapRecord"] == cid and params["rkey"] == K1
+
+
+def test_attach_replace_creates_when_absent_and_reports_concurrent_change(fake_client, monkeypatch):
+    vuri = _add_video(fake_client)
+    _, cid, _, replaced = cli._attach(fake_client, vuri, replace=True, validate=None, **TERMS)
+    assert not replaced and fake_client.repo.calls[-1][0] == "create"
+    real_get = fake_client.repo.get_record
+
+    def stale_get(p):  # someone rewrites the consent between our read and our write
+        r = real_get(p)
+        if p["collection"] == "org.consentvid.consent":
+            fake_client.repo.records[(p["collection"], p["rkey"])] = ("bafyother", r.value)
+        return r
+
+    monkeypatch.setattr(fake_client.repo, "get_record", stale_get)
+    with pytest.raises(ConsentVidError, match="changed concurrently"):
+        cli._attach(fake_client, vuri, replace=True, validate=None, **TERMS)
 
 
 def test_attach_refuses_other_repo(fake_client):
     with pytest.raises(ConsentVidError, match="not in your repo"):
-        cli._attach(fake_client, f"at://{BOB}/org.consentvid.video/v1", replace=False, validate=None, **TERMS)
+        cli._attach(fake_client, f"at://{BOB}/org.consentvid.video/{K1}", replace=False, validate=None, **TERMS)
 
 
 VOPTS = dict(
@@ -480,13 +502,13 @@ def test_storage_value_is_validated_per_kind(fake_client, tmp_path, monkeypatch)
     ],
 )
 def test_bytes_shared_normalises_pointers(fake_client, mine, theirs):
-    other = _add_video(fake_client, "v2", storageRef=theirs, contentHash="sha256-" + "cd" * 32)
+    other = _add_video(fake_client, K2, storageRef=theirs, contentHash="sha256-" + "cd" * 32)
     assert cli._bytes_shared(fake_client, ALICE, mine, "sha256-" + "ef" * 32) == other
 
 
 def test_bytes_shared_by_content_hash(fake_client):
     h = "sha256-" + "cd" * 32
-    other = _add_video(fake_client, "v2", contentHash=h, storageRef={"kind": "url", "value": "https://a/b"})
+    other = _add_video(fake_client, K2, contentHash=h, storageRef={"kind": "url", "value": "https://a/b"})
     assert cli._bytes_shared(fake_client, ALICE, {"kind": "r2", "value": "https://x/y"}, h) == other
     assert cli._bytes_shared(fake_client, ALICE, {"kind": "r2", "value": "https://x/y"}, h, exclude_uri=other) is None
 
@@ -586,24 +608,157 @@ def test_failed_register_never_unpins_an_existing_kubo_pin(fake_client, tmp_path
     assert "/api/v0/pin/rm" not in seen and seen.count("/api/v0/add") == 2
 
 
-# ------------------------------------ R1-20: revoking one of several consents
+# ------------------------------ R1-01 / R1-02: one consent; atomic revoke
 
 
-def test_revoke_warns_when_another_consent_still_governs(fake_client, monkeypatch):
+def test_revoke_consent_is_one_delete(fake_client, monkeypatch):
     from conftest import consent_record
 
     _add_video(fake_client)
-    fake_client.repo.records[("org.consentvid.consent", "a")] = ("bafya", consent_record())
-    fake_client.repo.records[("org.consentvid.consent", "b")] = ("bafyb", consent_record())
+    fake_client.repo.records[("org.consentvid.consent", K1)] = ("bafya", consent_record())
     monkeypatch.setattr(cli, "get_client", lambda: fake_client)
-    b = f"at://{ALICE}/org.consentvid.consent/b"
-    r = run("revoke", b, "-y")
-    assert r.exit_code == 0 and "now governs" in r.output and "org.consentvid.consent/a" in r.output, r.output
-    assert ("org.consentvid.consent", "a") in fake_client.repo.records
-    fake_client.repo.records[("org.consentvid.consent", "b")] = ("bafyb", consent_record())
-    r = run("revoke", b, "-y", "--all")
+    r = run("revoke", f"at://{ALICE}/org.consentvid.consent/{K1}", "-y", "--all")  # --all: deprecated no-op
     assert r.exit_code == 0, r.output
-    assert not [k for k in fake_client.repo.records if k[0] == "org.consentvid.consent"]
+    assert [c[0] for c in fake_client.repo.calls] == ["delete"]
+    assert "deprecated" in r.output
+
+
+def test_revoke_video_is_one_apply_writes_commit(fake_client, monkeypatch):
+    from conftest import consent_record
+
+    vuri = _add_video(fake_client)
+    fake_client.repo.records[("org.consentvid.consent", K1)] = ("bafya", consent_record())
+    fake_client.repo.records[("org.consentvid.consent", K2)] = ("bafyb", consent_record())  # legacy, mis-keyed
+    fake_client.repo.records[("org.consentvid.consent", K0)] = ("bafyc", consent_record(rkey=K0))  # another video
+    monkeypatch.setattr(cli, "get_client", lambda: fake_client)
+    r = run("revoke", vuri, "-y")
+    assert r.exit_code == 0, r.output
+    writes = [c for c in fake_client.repo.calls if c[0] not in ("get", "get_latest_commit")]
+    assert [c[0] for c in writes] == ["apply_writes"]
+    ops = [(w["$type"].rsplit("#", 1)[1], w["collection"], w["rkey"]) for w in writes[0][1]["writes"]]
+    assert ops[-1] == ("delete", "org.consentvid.video", K1)  # the video last
+    assert sorted(ops[:-1]) == [("delete", "org.consentvid.consent", K1), ("delete", "org.consentvid.consent", K2)]
+    assert set(fake_client.repo.records) == {("org.consentvid.consent", K0)}
+
+
+def test_revoke_chunks_beyond_the_apply_writes_limit(fake_client, monkeypatch):
+    monkeypatch.setattr(cli, "_APPLY_WRITES_MAX", 2)
+    targets = [("c", "a"), ("c", "b"), ("c", "d"), ("v", "x")]
+    batches = []
+    fake_client.com.atproto.repo.apply_writes = lambda p: batches.append(([w["rkey"] for w in p["writes"]],
+                                                                          p.get("swapCommit")))
+    cli._delete_in_one_commit(fake_client, ALICE, targets, swap_commit="bafyhead")
+    # R2-16: swapCommit on the first commit only (later ones follow it).
+    assert batches == [(["a", "b"], "bafyhead"), (["d", "x"], None)]
+
+
+def test_revoke_deletes_a_sidecar_whatever_its_video_uri(fake_client, monkeypatch):
+    """R2-16: a sidecar with a mismatched videoUri must not stay behind."""
+    from conftest import consent_record
+
+    vuri = _add_video(fake_client)
+    stray = consent_record(videoUri=f"at://{ALICE}/org.consentvid.video/{K0}")
+    fake_client.repo.records[("org.consentvid.consent", K1)] = ("bafya", stray)
+    monkeypatch.setattr(cli, "get_client", lambda: fake_client)
+    r = run("revoke", vuri, "-y")
+    assert r.exit_code == 0, r.output
+    assert fake_client.repo.records == {}
+    (apply,) = [p for op, p in fake_client.repo.calls if op == "apply_writes"]
+    assert apply["swapCommit"] == "bafycommit1"
+
+
+def test_revoke_survives_unrelated_writes_with_one_prompt(fake_client, monkeypatch):
+    """R3-05: the head moves while the prompt waits (a like) and before the
+    first two commits; the revoke still succeeds, asking only once."""
+    from conftest import consent_record
+
+    vuri = _add_video(fake_client)
+    fake_client.repo.records[("org.consentvid.consent", K1)] = ("bafya", consent_record())
+    monkeypatch.setattr(cli, "get_client", lambda: fake_client)
+    sleeps = []
+    monkeypatch.setattr(cli, "_revoke_sleep", sleeps.append)
+    real_confirm, prompts = click.confirm, []
+
+    def confirm(*a, **k):
+        prompts.append(a)
+        fake_client.repo.head += 1  # a Bluesky like while the prompt waits
+        return real_confirm(*a, **k)
+
+    monkeypatch.setattr(click, "confirm", confirm)
+    real_apply, conflicts = fake_client.repo.apply_writes, {"n": 2}
+
+    def apply_writes(p):
+        if conflicts["n"]:
+            conflicts["n"] -= 1
+            fake_client.repo.head += 1  # another write lands just before ours
+        return real_apply(p)
+
+    fake_client.repo.apply_writes = apply_writes
+    r = run("revoke", vuri, input="y\n")
+    assert r.exit_code == 0, r.output
+    assert len(prompts) == 1 and fake_client.repo.records == {}
+    applies = [p for op, p in fake_client.repo.calls if op == "apply_writes"]
+    assert len(applies) == 3 and len(sleeps) == 2 and all(0.2 <= x <= 1.0 for x in sleeps)
+    assert "Deleted video record" in r.output
+
+
+def test_revoke_asks_again_when_what_it_deletes_changed(fake_client, monkeypatch):
+    from conftest import consent_record
+
+    vuri = _add_video(fake_client)
+    fake_client.repo.records[("org.consentvid.consent", K1)] = ("bafya", consent_record())
+    monkeypatch.setattr(cli, "get_client", lambda: fake_client)
+    real_confirm, prompts = click.confirm, []
+
+    def confirm(*a, **k):
+        prompts.append(a)
+        if len(prompts) == 1:  # a legacy consent for this video appears meanwhile
+            fake_client.repo.records[("org.consentvid.consent", K2)] = ("bafyb", consent_record())
+        return real_confirm(*a, **k)
+
+    monkeypatch.setattr(click, "confirm", confirm)
+    r = run("revoke", vuri, input="y\ny\n")
+    assert r.exit_code == 0, r.output
+    assert len(prompts) == 2 and "changed since you confirmed it" in r.output
+    assert "2 consent receipt(s) will be deleted" in r.output and fake_client.repo.records == {}
+
+
+def test_revoke_declined_on_the_second_prompt_deletes_nothing(fake_client, monkeypatch):
+    from conftest import consent_record
+
+    vuri = _add_video(fake_client)
+    monkeypatch.setattr(cli, "get_client", lambda: fake_client)
+    real_confirm = click.confirm
+
+    def confirm(*a, **k):
+        fake_client.repo.records[("org.consentvid.consent", K2)] = ("bafyb", consent_record())
+        return real_confirm(*a, **k)
+
+    monkeypatch.setattr(click, "confirm", confirm)
+    r = run("revoke", vuri, input="y\nn\n")
+    assert r.exit_code != 0 and not [c for c in fake_client.repo.calls if c[0] == "apply_writes"]
+
+
+def test_revoke_gives_up_after_five_conflicts(fake_client, monkeypatch):
+    from conftest import consent_record
+
+    vuri = _add_video(fake_client)
+    fake_client.repo.records[("org.consentvid.consent", K1)] = ("bafya", consent_record())
+    monkeypatch.setattr(cli, "get_client", lambda: fake_client)
+    sleeps = []
+    monkeypatch.setattr(cli, "_revoke_sleep", sleeps.append)
+    real = fake_client.repo.get_latest_commit
+
+    def always_racing(p):
+        out = real(p)
+        fake_client.repo.head += 1
+        return out
+
+    fake_client.repo.get_latest_commit = always_racing
+    r = run("revoke", vuri, "-y")
+    assert r.exit_code != 0 and "your repo kept changing during revoke; re-run" in r.output
+    assert len([c for c in fake_client.repo.calls if c[0] == "apply_writes"]) == 5 and len(sleeps) == 4
+    assert len(fake_client.repo.records) == 2  # nothing deleted
 
 
 # ------------------------------------------------------- R1-21: logout
@@ -632,7 +787,7 @@ class _SessionClient:
 @pytest.mark.parametrize("fail", [False, True])
 def test_logout_ends_server_session_and_removes_file(monkeypatch, fail):
     fake = _SessionClient(fail)
-    monkeypatch.setattr(cli, "_new_client", lambda: fake)
+    monkeypatch.setattr(cli, "_throwaway_client", lambda: fake)
     cli.SESSION_PATH.parent.mkdir(parents=True, exist_ok=True)
     cli.SESSION_PATH.write_text("handle:::did:::access:::refresh:::https://pds")
     r = run("logout")
@@ -709,24 +864,24 @@ def test_sanitising_that_never_converges_fails_closed(fake_client, tmp_path, mon
     assert len(n) == cli._SANITISE_PASSES and not fake_client.repo.records
 
 
-# --------------------------------------- R2-02: export, invalid newest
+# ------------------------------------------ R1-01: export, sidecar only
 
 
-def test_export_omits_a_video_whose_newest_consent_is_invalid(monkeypatch, tmp_path):
+def test_export_uses_only_the_sidecar_consent(monkeypatch, tmp_path):
     from types import SimpleNamespace
 
     from conftest import consent_record
     from consentvid import identity
 
     V, C = "org.consentvid.video", "org.consentvid.consent"
-    vuri = f"at://{ALICE}/{V}/v1"
-    older = consent_record(modelClasses=["academic", "commercial"])
-    newer = consent_record(createdAt="2026-06-01T00:00:00Z", authorshipAttested=False)
+    vuri = f"at://{ALICE}/{V}/{K1}"
+    sidecar = consent_record(authorshipAttested=False)
+    misskeyed = consent_record(modelClasses=["academic", "commercial"])
     listing = {
         V: [SimpleNamespace(uri=vuri, cid=VIDEO_CID, value=video_record())],
         C: [
-            SimpleNamespace(uri=f"at://{ALICE}/{C}/old", cid="bafyold", value=older),
-            SimpleNamespace(uri=f"at://{ALICE}/{C}/new", cid="bafynew", value=newer),
+            SimpleNamespace(uri=f"at://{ALICE}/{C}/{K1}", cid="bafyside", value=sidecar),
+            SimpleNamespace(uri=f"at://{ALICE}/{C}/{K2}", cid="bafyother", value=misskeyed),
         ],
     }
     monkeypatch.setattr(identity, "resolve_did", lambda r: ALICE)
@@ -736,13 +891,12 @@ def test_export_omits_a_video_whose_newest_consent_is_invalid(monkeypatch, tmp_p
     out = tmp_path / "m.json"
     r = run("export", str(out), "--repo", ALICE)
     assert r.exit_code == 0, r.output
-    assert json.loads(out.read_text())["distribution"] == []
-    assert "is invalid" in r.output and "org.consentvid.consent/new" in r.output
-    # Valid newest: exported, and the older one is ignored.
-    listing[C][1].value = consent_record(createdAt="2026-06-01T00:00:00Z")
+    assert json.loads(out.read_text())["distribution"] == []  # the mis-keyed one never stands in
+    assert "is invalid" in r.output and "record key doesn't match its video" in r.output
+    listing[C][0].value = consent_record()
     r = run("export", str(out), "--repo", ALICE)
     (fo,) = json.loads(out.read_text())["distribution"]
-    assert fo["cv:consentReceipt"]["atUri"].endswith("/new")
+    assert fo["cv:consentReceipt"]["atUri"].endswith(f"/{K1}")
 
 
 # ------------------------------------ R2-16: private files from the start
@@ -795,10 +949,10 @@ def test_appview_query_escapes_untrusted_strings(monkeypatch):
 
     conn = av.connect()
     evil_title = "t\r\x1b[2K\x1b]52;c;cHduZWQ=\x07"
-    av.upsert_video(conn, f"at://{ALICE}/org.consentvid.video/v1", ALICE, "v1", VIDEO_CID, video_record(title=evil_title))
+    av.upsert_video(conn, f"at://{ALICE}/org.consentvid.video/{K1}", ALICE, K1, VIDEO_CID, video_record(title=evil_title))
     # Stored as an older index would have it (validation now rejects these terms).
     av.upsert_consent(
-        conn, f"at://{ALICE}/org.consentvid.consent/c1", ALICE, "c1", "bafyc",
+        conn, f"at://{ALICE}/org.consentvid.consent/{K1}", ALICE, K1, "bafyc",
         consent_record(modelClasses=["commercial\x1b[2K\r"], captureProvenance="x\u202e"),
     )
     conn.commit()
@@ -857,3 +1011,810 @@ def test_r2_public_base_is_checked_before_upload(fake_client, tmp_path, monkeypa
     with pytest.raises(ConsentVidError, match="storageRef"):
         cli._register(fake_client, f, storage_kind="r2", **VOPTS)
     assert uploads == [] and not fake_client.repo.records
+
+
+# ------------------------------------- R1-02: contribute is one atomic commit
+
+
+def _contribute(fake_client, tmp_path, monkeypatch, deleted=None):
+    _fake_media(monkeypatch)
+    monkeypatch.setattr("consentvid.storage.upload", _upload())
+    monkeypatch.setattr(
+        "consentvid.storage.delete_bytes", lambda ref, h: (deleted.append(ref) if deleted is not None else None) or "ok"
+    )
+    monkeypatch.setattr(cli, "get_client", lambda: fake_client)
+    f = tmp_path / "clip.mp4"
+    f.write_bytes(b"bytes")
+    return run(
+        "contribute", str(f), "--title", "t", "--storage-kind", "r2", "--attest-authorship", "--attest-adult",
+        "--people", "onlyMe", "--modality", "video", "--purpose", "training", "--model-class", "academic",
+    )
+
+
+def test_contribute_writes_video_and_consent_in_one_apply_writes(fake_client, tmp_path, monkeypatch):
+    from consentvid.records import compute_cid, is_tid
+
+    r = _contribute(fake_client, tmp_path, monkeypatch)
+    assert r.exit_code == 0, r.output
+    writes = [c for c in fake_client.repo.calls if c[0] in ("create", "put", "delete", "apply_writes")]
+    assert [c[0] for c in writes] == ["apply_writes"]
+    video_w, consent_w = writes[0][1]["writes"]
+    assert video_w["$type"] == consent_w["$type"] == "com.atproto.repo.applyWrites#create"
+    assert video_w["collection"] == "org.consentvid.video" and consent_w["collection"] == "org.consentvid.consent"
+    assert video_w["rkey"] == consent_w["rkey"] and is_tid(video_w["rkey"])
+    assert consent_w["value"]["videoCid"] == compute_cid(video_w["value"])
+    assert consent_w["value"]["videoUri"] == f"at://{ALICE}/org.consentvid.video/{video_w['rkey']}"
+    assert len(fake_client.repo.records) == 2
+
+
+def test_failed_contribute_cleans_up_bytes_and_writes_nothing(fake_client, tmp_path, monkeypatch):
+    fake_client.repo.fail_apply = RuntimeError("PDS down")
+    deleted = []
+    r = _contribute(fake_client, tmp_path, monkeypatch, deleted)
+    assert r.exit_code != 0
+    assert deleted and deleted[0]["value"] == R2_URL
+    assert not fake_client.repo.records
+
+
+def test_contribute_repins_consent_if_the_pds_assigns_another_video_cid(fake_client, tmp_path, monkeypatch):
+    from consentvid.records import compute_cid
+
+    real, actual = fake_client.repo.apply_writes, compute_cid({"re-encoded": True})
+
+    def apply_writes(p):
+        resp = real(p)
+        key = (p["writes"][0]["collection"], p["writes"][0]["rkey"])
+        fake_client.repo.records[key] = (actual, fake_client.repo.records[key][1])
+        resp.results[0].cid = actual
+        return resp
+
+    fake_client.repo.apply_writes = apply_writes
+    r = _contribute(fake_client, tmp_path, monkeypatch)
+    assert r.exit_code == 0, r.output
+    op, params = fake_client.repo.calls[-1]
+    assert op == "put" and params["record"]["videoCid"] == actual and "swapRecord" in params
+
+
+# --------------------------------- R1-15: a 429 keeps the uploaded bytes
+
+
+def _rate_limited_error(reset_in=60):
+    import time
+
+    from atproto_client.exceptions import RequestException
+    from atproto_client.request import Response
+
+    return RequestException(
+        Response(success=False, status_code=429, content=None, headers={"ratelimit-reset": str(int(time.time()) + reset_in)})
+    )
+
+
+def test_rate_limited_contribute_keeps_the_uploaded_bytes(fake_client, tmp_path, monkeypatch):
+    fake_client.repo.fail_apply = _rate_limited_error()
+    deleted = []
+    r = _contribute(fake_client, tmp_path, monkeypatch, deleted)
+    assert r.exit_code != 0 and deleted == []
+    assert "rate limited by your PDS until" in r.output and "bytes are kept" in r.output
+
+
+def test_rate_limited_register_keeps_the_uploaded_bytes(fake_client, tmp_path, monkeypatch):
+    _fake_media(monkeypatch)
+    monkeypatch.setattr("consentvid.storage.upload", _upload())
+    deleted = []
+    monkeypatch.setattr("consentvid.storage.delete_bytes", lambda ref, h: deleted.append(ref) or "ok")
+
+    def limited(p):
+        raise _rate_limited_error()
+
+    fake_client.repo.create_record = limited
+    f = tmp_path / "clip.mp4"
+    f.write_bytes(b"bytes")
+    with pytest.raises(ConsentVidError, match="rate limited"):
+        cli._register(fake_client, f, storage_kind="r2", **VOPTS)
+    assert deleted == []
+
+
+# ------------------------------ R1-21: byte limits also report characters
+
+
+def test_byte_limit_error_reports_characters(fake_client):
+    rec = {**video_record(), "title": "字" * 101}
+    with pytest.raises(ConsentVidError, match=r"303 bytes exceeds maxLength 300 \(101 characters"):
+        cli._check_before_write("org.consentvid.video", rec, ALICE)
+
+
+# ----------------------- R1-03: log in at the account's own PDS, no AppView
+
+
+class _LoginClient:
+    instances = []
+    session_info = {}  # extra getSession / createSession fields (active, status)
+    session_pds = "https://pds.alice.example"  # where an imported session points
+    scope = "com.atproto.appPass"
+    create_error = None
+
+    def __init__(self, base_url=None, *a, **k):
+        from types import SimpleNamespace
+
+        self.base_url, self.sessions, self.imported = base_url, [], None
+        self._base_url = f"{base_url}/xrpc" if base_url else None
+        self._session = None
+        self.server_error = None
+        self.deleted = []
+        server = SimpleNamespace(get_session=self._get_session, delete_session=lambda **kw: self.deleted.append(kw))
+        self._server = server
+        _LoginClient.instances.append(self)
+        self.com = type("C", (), {"atproto": type("A", (), {"server": server})()})()
+        actor = type("Act", (), {"get_profile": self._profile})()
+        self.app = type("App", (), {"bsky": type("B", (), {"actor": actor})()})()
+
+    def on_session_change(self, cb):
+        pass
+
+    def _profile(self, *a, **k):
+        raise AssertionError("getProfile (AppView) must not be called")
+
+    def login(self, *a, **k):
+        raise AssertionError("Client.login must not be called")
+
+    def _session_for(self, pds):
+        from types import SimpleNamespace
+
+        self._session = SimpleNamespace(pds_endpoint=pds, access_jwt_payload=SimpleNamespace(scope=_LoginClient.scope))
+
+    def _get_refresh_auth_headers(self):
+        return {"Authorization": "Bearer refresh"}
+
+    def _get_and_set_session(self, login, password):
+        from types import SimpleNamespace
+
+        self.sessions.append((login, password))
+        if _LoginClient.create_error:
+            raise _LoginClient.create_error
+        self._session_for(self.base_url)
+        return SimpleNamespace(did=ALICE, handle="alice.example.com", **_LoginClient.session_info)
+
+    def _import_session_string(self, s):
+        self.imported = s
+        self._session_for(_LoginClient.session_pds)
+
+    def _get_session(self):
+        from types import SimpleNamespace
+
+        if _LoginClient.server_error:
+            raise _LoginClient.server_error
+        return SimpleNamespace(did=ALICE, handle="handle.invalid", **_LoginClient.session_info)
+
+
+@pytest.fixture
+def login_env(monkeypatch):
+    from types import SimpleNamespace
+
+    from consentvid import identity
+
+    _LoginClient.instances = []
+    _LoginClient.server_error = None
+    _LoginClient.create_error = None
+    _LoginClient.session_info = {}
+    _LoginClient.session_pds = "https://pds.alice.example"
+    _LoginClient.scope = "com.atproto.appPass"
+    state = SimpleNamespace(handle="alice.example.com", resolved=[])
+    monkeypatch.setattr(cli, "Client", _LoginClient)
+    monkeypatch.delenv("CONSENTVID_SERVICE", raising=False)
+
+    def resolve_did(h):
+        state.resolved.append(h)
+        return ALICE
+
+    monkeypatch.setattr(identity, "resolve_did", resolve_did)
+    monkeypatch.setattr(
+        identity,
+        "resolve_identity",
+        lambda did: SimpleNamespace(did=did, pds="https://pds.alice.example", signing_key="k",
+                                    claimed_handle=state.handle),
+    )
+    # R3-08: login proves handle -> DID once and checks the DID document's
+    # claim; it never repeats the handle lookup.
+    monkeypatch.setattr(identity, "verified_handle", lambda did, **kw: pytest.fail("second handle lookup"))
+    return state
+
+
+def test_login_signs_in_at_the_resolved_pds(login_env):
+    client = cli._session_client("@Alice.Example.com", "pw")
+    (c,) = _LoginClient.instances
+    assert c.base_url == "https://pds.alice.example" and c.sessions == [(ALICE, "pw")]
+    assert client.me.did == ALICE and client.me.handle == "alice.example.com"
+
+
+def test_login_refuses_an_unverified_handle_before_sending_the_password(login_env):
+    from consentvid.errors import ConfigError
+
+    login_env.handle = None  # the DID document doesn't claim this handle back
+    with pytest.raises(ConfigError, match="doesn't verify"):
+        cli._session_client("alice.example.com", "pw")
+    assert all(not c.sessions for c in _LoginClient.instances)
+
+
+def test_cached_session_network_error_does_not_create_a_session(login_env, monkeypatch):
+    from atproto_client.exceptions import NetworkError
+
+    monkeypatch.setenv("CONSENTVID_HANDLE", "alice.example.com")
+    monkeypatch.setenv("CONSENTVID_APP_PASSWORD", "pw")
+    cli.SESSION_PATH.parent.mkdir(parents=True, exist_ok=True)
+    cli.SESSION_PATH.write_text("session")
+    _LoginClient.server_error = NetworkError()
+    with pytest.raises(ConsentVidError, match="could not check the cached session"):
+        cli.get_client()
+    assert all(not c.sessions for c in _LoginClient.instances)
+
+
+def test_cached_session_shows_handle_invalid_as_the_did(login_env):
+    cli.SESSION_PATH.parent.mkdir(parents=True, exist_ok=True)
+    cli.SESSION_PATH.write_text("session")
+    client = cli.get_client()
+    assert client.me.handle == ALICE and _LoginClient.instances[0].imported == "session"
+
+
+def test_expired_cached_session_falls_back_to_credentials(login_env, monkeypatch):
+    from atproto_client.exceptions import BadRequestError
+    from atproto_client.models.common import XrpcError
+    from atproto_client.request import Response
+
+    monkeypatch.setenv("CONSENTVID_HANDLE", "alice.example.com")
+    monkeypatch.setenv("CONSENTVID_APP_PASSWORD", "pw")
+    cli.SESSION_PATH.parent.mkdir(parents=True, exist_ok=True)
+    cli.SESSION_PATH.write_text("session")
+    _LoginClient.server_error = BadRequestError(
+        Response(success=False, status_code=400, content=XrpcError(error="ExpiredToken", message="x"), headers={})
+    )
+    client = cli.get_client()
+    assert client.me.did == ALICE
+    assert _LoginClient.instances[-1].sessions == [(ALICE, "pw")]
+
+
+# --------------- R2-09 / R2-10: session state, migration and credential type
+
+
+def _cached_session():
+    cli.SESSION_PATH.parent.mkdir(parents=True, exist_ok=True)
+    cli.SESSION_PATH.write_text("session")
+
+
+def test_cached_session_of_a_deactivated_account_is_refused(login_env, fake_client, tmp_path, monkeypatch):
+    from consentvid.errors import ConfigError
+
+    _cached_session()
+    _LoginClient.session_info = {"active": False, "status": "deactivated"}
+    with pytest.raises(ConfigError, match="is deactivated; if you migrated PDS, run `consentvid login` again"):
+        cli.get_client()
+    # contribute stops there, before anything is uploaded
+    uploads = []
+    from consentvid import storage
+
+    monkeypatch.setattr(storage, "upload", lambda *a, **k: uploads.append(a))
+    _cached_session()
+    f = tmp_path / "clip.mp4"
+    f.write_bytes(b"x")
+    r = run("contribute", str(f), "--title", "t", "--attest-authorship", "--attest-adult", "--people", "onlyMe",
+            "--modality", "video", "--purpose", "training", "--model-class", "academic", "--keep-metadata",
+            "--storage-kind", "r2")
+    assert r.exit_code != 0 and "deactivated" in r.output and uploads == []
+
+
+def test_cached_session_on_the_old_pds_signs_in_again(login_env, monkeypatch):
+    _cached_session()
+    _LoginClient.session_pds = "https://old-pds.example"  # the DID document now names pds.alice.example
+    monkeypatch.setenv("CONSENTVID_HANDLE", "alice.example.com")
+    monkeypatch.setenv("CONSENTVID_APP_PASSWORD", "pw")
+    r = CliRunner().invoke(cli.main, ["whoami"])
+    assert r.exit_code == 0, r.output
+    assert "your account moved to https://pds.alice.example; signing in again" in r.output
+    assert _LoginClient.instances[-1].base_url == "https://pds.alice.example"
+    assert _LoginClient.instances[-1].sessions == [(ALICE, "pw")]
+
+
+def test_cached_session_on_the_old_pds_without_credentials_asks_for_login(login_env):
+    from consentvid.errors import ConfigError
+
+    _cached_session()
+    _LoginClient.session_pds = "https://old-pds.example"
+    with pytest.raises(ConfigError, match="not logged in"):
+        cli.get_client()
+    assert not cli.SESSION_PATH.exists()
+
+
+def test_matching_active_session_is_used_unchanged(login_env):
+    _cached_session()
+    _LoginClient.session_info = {"active": True}
+    client = cli.get_client()
+    assert client.me.did == ALICE and cli.SESSION_PATH.exists() and not client.sessions
+
+
+def test_identity_failure_is_not_a_migration(login_env, monkeypatch):
+    from consentvid import identity
+
+    _cached_session()
+
+    def down(did):
+        raise OSError("plc.directory unreachable")
+
+    monkeypatch.setattr(identity, "resolve_identity", down)
+    with pytest.raises(ConsentVidError, match="could not resolve"):
+        cli.get_client()
+    assert cli.SESSION_PATH.exists()
+
+
+@pytest.mark.parametrize(
+    "scope, warning",
+    [
+        ("com.atproto.access", "MAIN account password"),
+        ("com.atproto.appPassPrivileged", "non-privileged"),
+        ("com.atproto.appPass", None),
+        ("some.other.pds.scope", None),
+    ],
+)
+def test_login_flags_the_credential_type(login_env, scope, warning):
+    _LoginClient.scope = scope
+    r = CliRunner().invoke(cli.main, ["login"], input="alice.example.com\npw\n")
+    assert r.exit_code == 0, r.output
+    if warning:
+        assert warning in r.output
+    else:
+        assert "warning" not in r.output
+
+
+def test_login_refuses_a_taken_down_account(login_env):
+    from consentvid.errors import ConfigError
+
+    _LoginClient.scope = "com.atproto.takendown"
+    with pytest.raises(ConfigError, match="taken down"):
+        cli._session_client("alice.example.com", "pw")
+    assert _LoginClient.instances[-1].deleted and not cli.SESSION_PATH.exists()
+
+
+def test_two_factor_error_is_explained(login_env):
+    from atproto_client.exceptions import UnauthorizedError
+    from atproto_client.models.common import XrpcError
+    from atproto_client.request import Response
+
+    from consentvid.errors import ConfigError
+
+    _LoginClient.create_error = UnauthorizedError(
+        Response(success=False, status_code=401, content=XrpcError(error="AuthFactorTokenRequired", message="x"),
+                 headers={})
+    )
+    with pytest.raises(ConfigError, match="email code .* use an app password"):
+        cli._session_client("alice.example.com", "pw")
+
+
+# ------------------------- R1-16: only the lexicon authority publishes, compatibly
+
+
+@pytest.fixture
+def lexicon_env(fake_client, monkeypatch):
+    """The authority's published schemas live in fake_client's repo (so the
+    compare-and-swap is enforced by FakeRepo); DNS names ``authority``."""
+    from types import SimpleNamespace
+
+    from consentvid import identity
+    from consentvid import lexicons as lx
+
+    state = SimpleNamespace(authority=ALICE)
+
+    def publish(nsid, doc, cid="bafyold"):
+        fake_client.repo.records[(lx.SCHEMA_COLLECTION, nsid)] = (cid, {**doc, "$type": lx.SCHEMA_COLLECTION})
+
+    state.publish = publish
+    pub = SimpleNamespace(com=SimpleNamespace(atproto=SimpleNamespace(repo=fake_client.repo)))
+    monkeypatch.setattr(cli, "get_client", lambda: fake_client)
+    monkeypatch.setattr(lx, "resolve_did_via_dns", lambda nsid, strict=False: state.authority)
+    monkeypatch.setattr(identity, "public_client", lambda did: pub)
+    return state
+
+
+def _writes(fake_client):
+    return [(op, p) for op, p in fake_client.repo.calls if op in ("put", "create")]
+
+
+def test_publish_refuses_a_non_authority(fake_client, lexicon_env):
+    lexicon_env.authority = BOB
+    r = run("publish-lexicons")
+    assert r.exit_code != 0 and "not the lexicon authority" in r.output and not _writes(fake_client)
+
+
+def test_publish_without_dns_needs_bootstrap(fake_client, lexicon_env):
+    lexicon_env.authority = None
+    r = run("publish-lexicons")
+    assert r.exit_code != 0 and "--bootstrap" in r.output and not _writes(fake_client)
+    r = run("publish-lexicons", "--bootstrap")
+    assert r.exit_code == 0, r.output
+    writes = _writes(fake_client)
+    # R2-02: a first publication is a createRecord under rkey=nsid.
+    assert [op for op, _ in writes] == ["create", "create"]
+    assert sorted(p["rkey"] for _, p in writes) == ["org.consentvid.consent", "org.consentvid.video"]
+    assert all("validate" not in p for _, p in writes)
+
+
+def test_publish_refuses_breaking_changes(fake_client, lexicon_env):
+    from consentvid import lexicons as lx
+
+    old = lx.load_lexicon("org.consentvid.consent")
+    old["defs"]["main"]["record"]["properties"]["compensation"]["knownValues"].append("barter")
+    lexicon_env.publish("org.consentvid.consent", old)
+    r = run("publish-lexicons", "--nsid", "org.consentvid.consent")
+    assert r.exit_code != 0 and "'barter' removed" in r.output and not _writes(fake_client)
+    r = run("publish-lexicons", "--nsid", "org.consentvid.consent", "--allow-breaking", "--skip-pds-validation")
+    assert r.exit_code == 0, r.output
+    ((op, p),) = _writes(fake_client)
+    assert op == "put" and p["validate"] is False and p["rkey"] == "org.consentvid.consent"
+    assert p["swapRecord"] == "bafyold"  # R2-02: compare-and-swap on the existing CID
+
+
+def test_bootstrap_still_checks_an_existing_schema(fake_client, lexicon_env):
+    """R2-02: --bootstrap (no DNS yet) must not skip the evolution check."""
+    from consentvid import lexicons as lx
+
+    lexicon_env.authority = None
+    old = lx.load_lexicon("org.consentvid.consent")
+    old["defs"]["main"]["record"]["required"].remove("compensation")  # we'd add it: breaking
+    lexicon_env.publish("org.consentvid.consent", old)
+    r = run("publish-lexicons", "--nsid", "org.consentvid.consent", "--bootstrap")
+    assert r.exit_code != 0 and "'compensation' added to required" in r.output and not _writes(fake_client)
+    r = run("publish-lexicons", "--nsid", "org.consentvid.consent", "--bootstrap", "--allow-breaking")
+    assert r.exit_code == 0, r.output
+    ((op, p),) = _writes(fake_client)
+    assert op == "put" and p["swapRecord"] == "bafyold"
+
+
+def test_publish_reports_a_concurrent_change(fake_client, lexicon_env):
+    import json as _json
+
+    nsid = "org.consentvid.video"
+    lexicon_env.publish(nsid, _json.loads((ROOT / "tests/fixtures/published_lexicons" / f"{nsid}.json").read_text()))
+    real_put = fake_client.repo.put_record
+
+    def put_after_someone_else(p):
+        lexicon_env.publish(nsid, {**fake_client.repo.records[(p["collection"], p["rkey"])][1]}, cid="bafynewer")
+        return real_put(p)
+
+    fake_client.repo.put_record = put_after_someone_else
+    r = run("publish-lexicons", "--nsid", nsid)
+    assert r.exit_code != 0 and "changed while you were publishing; re-run" in r.output
+    fake_client.repo.put_record = real_put
+    fake_client.repo.records.pop(("com.atproto.lexicon.schema", nsid))
+    real_create = fake_client.repo.create_record
+
+    def create_after_someone_else(p):
+        lexicon_env.publish(nsid, {"id": nsid})
+        return real_create(p)
+
+    fake_client.repo.create_record = create_after_someone_else
+    r = run("publish-lexicons", "--nsid", nsid)
+    assert r.exit_code != 0 and "changed while you were publishing; re-run" in r.output
+
+
+def test_publish_compatible_change_is_allowed(fake_client, lexicon_env):
+    import json as _json
+
+    for nsid in ("org.consentvid.video", "org.consentvid.consent"):
+        lexicon_env.publish(nsid, _json.loads((ROOT / "tests/fixtures/published_lexicons" / f"{nsid}.json").read_text()))
+    r = run("publish-lexicons")
+    assert r.exit_code == 0, r.output
+    assert [op for op, _ in _writes(fake_client)] == ["put", "put"]
+
+
+def test_dns_failure_is_not_treated_as_no_record(fake_client, monkeypatch):
+    """R2-02: a timeout must not lead to --bootstrap (and a clobber)."""
+    import dns.exception
+    import dns.resolver
+
+    from consentvid import lexicons as lx
+    from consentvid.errors import LexiconDnsError
+
+    def timeout(*a, **k):
+        raise dns.exception.Timeout()
+
+    monkeypatch.setattr(dns.resolver, "resolve", timeout)
+    with pytest.raises(LexiconDnsError, match="Timeout"):
+        lx.resolve_did_via_dns("org.consentvid.video")
+    monkeypatch.setattr(cli, "get_client", lambda: fake_client)
+    r = run("publish-lexicons")
+    assert r.exit_code != 0 and "DNS lookup" in r.output and "--bootstrap" not in r.output
+    assert not fake_client.repo.calls
+
+    def nxdomain(*a, **k):
+        raise dns.resolver.NXDOMAIN()
+
+    monkeypatch.setattr(dns.resolver, "resolve", nxdomain)
+    assert lx.resolve_did_via_dns("org.consentvid.video") is None
+
+
+def test_doctor_shows_dns_errors(monkeypatch):
+    import dns.exception
+    import dns.resolver
+
+    def timeout(*a, **k):
+        raise dns.exception.Timeout()
+
+    monkeypatch.setattr(dns.resolver, "resolve", timeout)
+    monkeypatch.setattr(cli, "get_client", lambda: (_ for _ in ()).throw(ConsentVidError("not logged in")))
+    r = run("doctor")
+    assert "lexicon org.consentvid.video: DNS error:" in r.output
+    assert "no _lexicon DNS record" not in r.output
+
+
+# ------------------------- R2-28: resolve-lexicon verifies the schema record
+
+
+@pytest.mark.parametrize(
+    "value, ok",
+    [
+        ("good", True),
+        ({"$type": "com.atproto.lexicon.schema", "id": "org.consentvid.other"}, False),
+        ({"$type": "app.bsky.feed.post", "id": "org.consentvid.video"}, False),
+        (None, False),
+    ],
+)
+def test_resolve_lexicon_verifies_type_and_id(monkeypatch, value, ok):
+    from consentvid import lexicons as lx
+    from consentvid import verify
+    from consentvid.verify import VerifiedRecord
+
+    nsid = "org.consentvid.video"
+    if value == "good":
+        value = lx.build_schema_record(lx.load_lexicon(nsid))
+    uri = f"at://{ALICE}/{lx.SCHEMA_COLLECTION}/{nsid}"
+    fetched = []
+
+    def fetch(u):
+        fetched.append(u)
+        return VerifiedRecord(u, value is not None, "bafy" if value else None, value, "3maaaaaaaaaa2", True)
+
+    monkeypatch.setattr(verify, "fetch_verified", fetch)
+    r = run("resolve-lexicon", nsid, "--did", ALICE)
+    assert fetched == [uri]
+    if ok:
+        assert r.exit_code == 0, r.output
+        assert "verified (commit signature + MST proof)" in r.output and "matches the local lexicon" in r.output
+    else:
+        assert r.exit_code != 0 and ("not com.atproto.lexicon.schema" in r.output or "not org.consentvid.video" in r.output
+                                     or "does not exist" in r.output)
+
+
+# ------------------------- R2-17: --validate is flagged before any upload
+
+
+@pytest.mark.parametrize("how", ["flag", "env"])
+def test_strict_validation_is_refused_before_uploading(fake_client, tmp_path, monkeypatch, how):
+    from consentvid import storage
+
+    uploads = []
+    monkeypatch.setattr(storage, "upload", lambda *a, **k: uploads.append(a))
+    monkeypatch.setattr(cli, "get_client", lambda: fake_client)
+    monkeypatch.setattr(cli, "_prepare_bytes", lambda *a, **k: pytest.fail("prepared bytes"))
+    f = tmp_path / "clip.mp4"
+    f.write_bytes(b"x")
+    args = ["contribute", str(f), "--title", "t", "--attest-authorship", "--attest-adult", "--people", "onlyMe",
+            "--modality", "video", "--purpose", "training", "--model-class", "academic", "--storage-kind", "r2"]
+    if how == "flag":
+        args.append("--validate")
+    else:
+        monkeypatch.setenv("CONSENTVID_VALIDATE", "1")
+    r = run(*args)
+    assert r.exit_code != 0 and "likely be rejected by your PDS after the upload" in r.output
+    assert "not uploading" in r.output and uploads == [] and not fake_client.repo.calls
+
+
+def test_validation_status_is_printed(fake_client, capsys):
+    from types import SimpleNamespace
+
+    cli._note_validation(SimpleNamespace(validation_status="unknown"), SimpleNamespace())
+    assert capsys.readouterr().out == "  PDS validation: unknown\n"
+
+
+def test_login_needs_no_second_handle_lookup(login_env):
+    """R3-08: handle -> DID is proven by resolve_did, the back-link by the
+    DID document's claim; verified_handle (patched to fail) is never called,
+    so a transient failure of a repeated lookup can't refuse the login."""
+    client = cli._session_client("alice.example.com", "pw")
+    assert client.me.did == ALICE and login_env.resolved == ["alice.example.com"]
+
+
+# ------------------- R3-06: a write that commits but whose response is lost
+
+
+def _timeout():
+    from atproto_client.exceptions import InvokeTimeoutError
+
+    return InvokeTimeoutError()
+
+
+def test_contribute_that_commits_then_times_out_succeeds(fake_client, tmp_path, monkeypatch):
+    real = fake_client.repo.apply_writes
+
+    def commit_then_timeout(p):
+        real(p)
+        raise _timeout()
+
+    fake_client.repo.apply_writes = commit_then_timeout
+    deleted = []
+    r = _contribute(fake_client, tmp_path, monkeypatch, deleted)
+    assert r.exit_code == 0, r.output
+    assert "committed the write although the response was lost" in r.output
+    assert deleted == [] and len(fake_client.repo.records) == 2
+    assert "Created consent receipt" in r.output
+
+
+def _register_upload(fake_client, tmp_path, monkeypatch, deleted):
+    _fake_media(monkeypatch)
+    monkeypatch.setattr("consentvid.storage.upload", _upload())
+    monkeypatch.setattr("consentvid.storage.delete_bytes", lambda ref, h: deleted.append(ref) or "ok")
+    f = tmp_path / "clip.mp4"
+    f.write_bytes(b"bytes")
+    return f
+
+
+def test_register_uses_a_client_chosen_record_key(fake_client, tmp_path, monkeypatch):
+    from consentvid.records import is_tid
+
+    f = _register_upload(fake_client, tmp_path, monkeypatch, [])
+    uri, _, _ = cli._register(fake_client, f, storage_kind="r2", **VOPTS)
+    ((op, params),) = [c for c in fake_client.repo.calls if c[0] == "create"]
+    assert is_tid(params["rkey"]) and uri.endswith("/" + params["rkey"])
+
+
+def test_register_that_commits_then_times_out_succeeds(fake_client, tmp_path, monkeypatch):
+    from consentvid.records import compute_cid
+
+    deleted = []
+    f = _register_upload(fake_client, tmp_path, monkeypatch, deleted)
+    real = fake_client.repo.create_record
+
+    def commit_then_timeout(p):
+        real(p)
+        key = (p["collection"], p["rkey"])
+        fake_client.repo.records[key] = (compute_cid(p["record"]), p["record"])  # the PDS's real CID
+        raise _timeout()
+
+    fake_client.repo.create_record = commit_then_timeout
+    uri, cid, rec = cli._register(fake_client, f, storage_kind="r2", **VOPTS)
+    assert cid == compute_cid(rec) and deleted == []
+    assert uri.startswith(f"at://{ALICE}/org.consentvid.video/")
+
+
+def test_timeout_with_nothing_written_cleans_up_as_before(fake_client, tmp_path, monkeypatch):
+    from atproto_client.exceptions import InvokeTimeoutError
+
+    deleted = []
+    f = _register_upload(fake_client, tmp_path, monkeypatch, deleted)
+
+    def timeout(p):
+        raise _timeout()
+
+    fake_client.repo.create_record = timeout
+    with pytest.raises(InvokeTimeoutError):
+        cli._register(fake_client, f, storage_kind="r2", **VOPTS)
+    assert deleted and deleted[0]["value"] == R2_URL
+
+
+@pytest.mark.parametrize("check", ["fails", "other-cid"])
+def test_unknown_outcome_keeps_the_bytes(fake_client, tmp_path, monkeypatch, check):
+    deleted = []
+    f = _register_upload(fake_client, tmp_path, monkeypatch, deleted)
+    real = fake_client.repo.create_record
+
+    def commit_then_timeout(p):
+        if check == "other-cid":
+            real(p)  # stored under a fake CID: not what we wrote
+        raise _timeout()
+
+    fake_client.repo.create_record = commit_then_timeout
+    if check == "fails":
+        def broken(p):
+            raise OSError("PDS unreachable")
+
+        fake_client.repo.get_record = broken
+    with pytest.raises(ConsentVidError, match="the outcome of the write is unknown; run `consentvid list`"):
+        cli._register(fake_client, f, storage_kind="r2", **VOPTS)
+    assert deleted == []
+
+
+def test_a_definite_refusal_is_not_looked_up(fake_client, tmp_path, monkeypatch):
+    from atproto_client.exceptions import BadRequestError
+    from atproto_client.models.common import XrpcError
+    from atproto_client.request import Response
+
+    deleted = []
+    f = _register_upload(fake_client, tmp_path, monkeypatch, deleted)
+    err = BadRequestError(Response(success=False, status_code=400, content=XrpcError(error="InvalidRequest", message="x"), headers={}))
+
+    def refuse(p):
+        raise err
+
+    fake_client.repo.create_record = refuse
+    fake_client.repo.get_record = lambda p: pytest.fail("looked up a refused write")
+    with pytest.raises(BadRequestError):
+        cli._register(fake_client, f, storage_kind="r2", **VOPTS)
+    assert deleted
+
+
+def test_new_client_waits_long_enough_for_a_commit():
+    client = cli._new_client("https://pds.example.com")
+    timeout = client.request._client.timeout
+    assert timeout.read == 60 and timeout.write == 60 and timeout.connect == 10
+
+
+# ------------------- R3-13: a new login ends the session it replaces
+
+
+def test_login_ends_the_previous_session_before_creating_one(login_env, monkeypatch):
+    cli.SESSION_PATH.parent.mkdir(parents=True, exist_ok=True)
+    cli.SESSION_PATH.write_text("old-session")
+    monkeypatch.setenv("CONSENTVID_HANDLE", "alice.example.com")
+    monkeypatch.setenv("CONSENTVID_APP_PASSWORD", "pw")
+    r = CliRunner().invoke(cli.main, ["login"])
+    assert r.exit_code == 0, r.output
+    enders = [i for i, c in enumerate(_LoginClient.instances) if c.imported == "old-session" and c.deleted]
+    creators = [i for i, c in enumerate(_LoginClient.instances) if c.sessions]
+    assert enders and creators and enders[0] < creators[0]
+    ender = _LoginClient.instances[enders[0]]
+    # deleteSession with the old session's REFRESH token, sent to its own PDS.
+    assert ender.deleted == [{"headers": {"Authorization": "Bearer refresh"}, "ignore_session_check": True}]
+    assert ender._session.pds_endpoint == _LoginClient.session_pds
+    assert "Ended the previous session" in r.output
+
+
+def test_a_failing_delete_session_does_not_block_login(login_env, monkeypatch):
+    cli.SESSION_PATH.parent.mkdir(parents=True, exist_ok=True)
+    cli.SESSION_PATH.write_text("old-session")
+    failing = _SessionClient(fail=True)
+    monkeypatch.setattr(cli, "_throwaway_client", lambda: failing)
+    monkeypatch.setenv("CONSENTVID_HANDLE", "alice.example.com")
+    monkeypatch.setenv("CONSENTVID_APP_PASSWORD", "pw")
+    r = CliRunner().invoke(cli.main, ["login"])
+    assert r.exit_code == 0, r.output
+    assert [c[0] for c in failing.calls] == ["import", "delete_session"]
+    assert "Logged in as" in r.output
+
+
+def test_moved_pds_relogin_ends_the_old_session(login_env, monkeypatch):
+    enders = []
+    monkeypatch.setattr(cli, "_end_cached_session", lambda **kw: enders.append(cli.SESSION_PATH.read_text()) or True)
+    _cached_session()
+    _LoginClient.session_pds = "https://old-pds.example"
+    monkeypatch.setenv("CONSENTVID_HANDLE", "alice.example.com")
+    monkeypatch.setenv("CONSENTVID_APP_PASSWORD", "pw")
+    r = CliRunner().invoke(cli.main, ["whoami"])
+    assert r.exit_code == 0, r.output
+    assert enders == ["session"]  # the cached (old-PDS) session, before the file is removed
+
+
+def test_deactivated_session_is_ended_before_it_is_dropped(login_env, monkeypatch):
+    from consentvid.errors import ConfigError
+
+    enders = []
+    monkeypatch.setattr(cli, "_end_cached_session", lambda **kw: enders.append(cli.SESSION_PATH.exists()) or True)
+    _cached_session()
+    _LoginClient.session_info = {"active": False, "status": "deactivated"}
+    with pytest.raises(ConfigError):
+        cli.get_client()
+    assert enders == [True] and not cli.SESSION_PATH.exists()
+
+
+@pytest.mark.parametrize("answer, code, text", [
+    ((False, "throttled"), 0, "note: relay reports throttled"),
+    ((False, "takendown"), 1, "UNAVAILABLE: the relay reports the account takendown"),
+])
+def test_verify_command_separates_relay_processing_from_account_status(monkeypatch, answer, code, text):
+    """R3-01 for `consentvid verify`."""
+    from conftest import consent_record
+    from consentvid import resync
+    from consentvid import verify as vf
+    from consentvid.verify import VerifiedRecord
+
+    monkeypatch.setattr(vf, "fetch_verified", lambda at: VerifiedRecord(str(at), True, "bafyc", consent_record(), "3maaaaaaaaaa2", True))
+    monkeypatch.setattr(resync, "_relay_lookup", lambda did: answer)
+    resync.clear_relay_cache()
+    r = run("verify", f"at://{ALICE}/org.consentvid.consent/{K1}")
+    assert r.exit_code == code, r.output
+    assert text in r.output

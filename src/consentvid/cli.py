@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import random
 import re
 import sys
 import tempfile
@@ -165,14 +166,30 @@ def _warn(msg: str) -> None:
     click.secho(f"warning: {_safe_lines(msg)}", fg="yellow", err=True)
 
 
+_DEFAULT_SERVICE = "https://bsky.social"
+
+
 def _service_url() -> str:
     from consentvid.storage import require_https
 
-    return require_https("CONSENTVID_SERVICE", os.environ.get("CONSENTVID_SERVICE") or "https://bsky.social")
+    return require_https("CONSENTVID_SERVICE", os.environ.get("CONSENTVID_SERVICE") or _DEFAULT_SERVICE)
 
 
-def _new_client() -> Client:
-    client = Client(_service_url())
+# The SDK's httpx client would use httpx's 5 s default: shorter than a PDS
+# may take to commit a write, so a write that succeeded would be reported as
+# failed (R3-06). Reads of untrusted hosts use identity's capped client.
+_WRITE_TIMEOUT_S = 60.0
+_CONNECT_TIMEOUT_S = 10.0
+
+
+def _new_client(base_url: str | None = None) -> Client:
+    import httpx
+    from atproto_client.request import Request
+
+    client = Client(
+        base_url or _service_url(),
+        request=Request(timeout=httpx.Timeout(_WRITE_TIMEOUT_S, connect=_CONNECT_TIMEOUT_S)),
+    )
 
     # Persist every new or refreshed session; otherwise the cached refresh
     # token eventually expires and every command fails with ExpiredToken.
@@ -184,15 +201,240 @@ def _new_client() -> Client:
     return client
 
 
+def _throwaway_client() -> Client:
+    """A client with no session-saving hook (for ending a cached session)."""
+    import httpx
+    from atproto_client.request import Request
+
+    return Client(_service_url(), request=Request(timeout=httpx.Timeout(_WRITE_TIMEOUT_S, connect=_CONNECT_TIMEOUT_S)))
+
+
+def _end_cached_session(*, strict: bool = False) -> bool:
+    """End the cached session on the server that issued it: deleteSession
+    with its REFRESH token, which revokes it (otherwise a replaced session
+    stays usable until it expires, and `logout` can no longer reach it).
+    Importing the session points the client at the session's own PDS.
+    Best effort: errors (the old PDS may be unreachable, or the account
+    deactivated there) are ignored, or raised with ``strict``. Returns True
+    if the server confirmed it. The file itself is left to the caller."""
+    if not SESSION_PATH.exists():
+        return False
+    try:
+        client = _throwaway_client()
+        client._import_session_string(SESSION_PATH.read_text().strip())  # no network
+        client.com.atproto.server.delete_session(
+            headers=client._get_refresh_auth_headers(), ignore_session_check=True
+        )
+        return True
+    except Exception:
+        if strict:
+            raise
+        return False
+
+
+def _set_me(client: Client, did: str, handle: str | None) -> None:
+    """Who we are, from the session itself (no AppView profile lookup:
+    Client.login's getProfile fails for accounts the Bluesky AppView
+    doesn't index). 'handle.invalid' is shown as the DID."""
+    import types
+
+    shown = handle if handle and handle != "handle.invalid" else did
+    client.me = types.SimpleNamespace(did=did, handle=shown)
+
+
+def _session_client(identifier: str, password: str) -> Client:
+    """Create a session on the account's OWN PDS: handle -> DID -> DID
+    document -> PDS, the way goat and the reference clients log in. The app
+    password is only ever sent to that PDS (or to CONSENTVID_SERVICE, an
+    explicit override)."""
+    from consentvid.identity import resolve_did, resolve_identity
+
+    identifier = identifier.strip().removeprefix("@")
+    if os.environ.get("CONSENTVID_SERVICE"):
+        client = _new_client()
+        click.echo(f"Signing in to {_service_url()} (CONSENTVID_SERVICE) ...")
+        session = _create_session(client, identifier, password)
+    elif "@" in identifier:
+        # An email address can't be resolved to a PDS.
+        _warn(f"signing in with an email address: using {_DEFAULT_SERVICE} (set CONSENTVID_SERVICE for another PDS)")
+        client = _new_client(_DEFAULT_SERVICE)
+        session = _create_session(client, identifier, password)
+    else:
+        did = resolve_did(identifier)  # handle -> DID: the forward direction, proven
+        ident = resolve_identity(did)
+        # The back-link: the DID document must claim this handle. Together
+        # that is the handle spec's bidirectional check; a second lookup of
+        # the same handle (verified_handle) would add only a failure mode.
+        if not identifier.startswith("did:") and getattr(ident, "claimed_handle", None) != identifier.lower():
+            raise ConfigError(
+                "handle doesn't verify against its DID document; log in with your DID or set CONSENTVID_SERVICE"
+            )
+        client = _new_client(ident.pds)
+        click.echo(f"Signing in to {ident.pds} ...")
+        session = _create_session(client, did, password)
+    _set_me(client, session.did, session.handle)
+    _check_session_scope(client, warn=True)
+    moved_to = _check_session_state(client, session)
+    if moved_to:
+        _end_cached_session()  # the session just created on the wrong PDS
+        SESSION_PATH.unlink(missing_ok=True)
+        raise ConfigError(
+            f"you signed in to {_session_pds(client)}, but your DID document names {_safe(moved_to)} as your PDS; "
+            "log in with your handle or DID (without CONSENTVID_SERVICE) so ConsentVid finds the right one"
+        )
+    return client
+
+
+def _create_session(client: Client, identifier: str, password: str):
+    """createSession, with the 2FA refusal explained."""
+    try:
+        return client._get_and_set_session(identifier, password)
+    except AtProtocolError as e:
+        if _xrpc_error_name(e) == "AuthFactorTokenRequired":
+            raise ConfigError(
+                "your account requires an email code for password logins; use an app password instead "
+                "(https://bsky.app/settings/app-passwords)"
+            ) from e
+        raise
+
+
+def _session_pds(client) -> str | None:
+    """The PDS this session talks to (the SDK moves the client to the PDS
+    named in createSession's didDoc)."""
+    pds = getattr(getattr(client, "_session", None), "pds_endpoint", None)
+    if isinstance(pds, str) and pds:
+        return pds
+    base = getattr(client, "_base_url", None)
+    return base if isinstance(base, str) else None
+
+
+def _host(url) -> str | None:
+    from urllib.parse import urlsplit
+
+    try:
+        return (urlsplit(url).hostname or "").lower().rstrip(".") or None
+    except (ValueError, TypeError):
+        return None
+
+
+def _check_session_state(client, info) -> str | None:
+    """Refuse a session whose account is not active (getSession /
+    createSession report active=false: deactivated, e.g. left behind after a
+    PDS migration, taken down or suspended), and compare the session's PDS
+    with the one the DID document names, as the OAuth spec requires of a
+    token's PDS. Returns the DID document's PDS when they differ, else None.
+    A resolution failure is reported, never taken for a mismatch."""
+    from consentvid.identity import resolve_identity
+
+    pds = _session_pds(client) or "your PDS"
+    if getattr(info, "active", None) is False:
+        status = getattr(info, "status", None)
+        _end_cached_session()
+        SESSION_PATH.unlink(missing_ok=True)
+        raise ConfigError(
+            f"your account on {_safe(pds)} is {_safe(status or 'inactive')}; "
+            "if you migrated PDS, run `consentvid login` again"
+        )
+    did = getattr(info, "did", None)
+    try:
+        doc_pds = resolve_identity(did).pds
+    except ConsentVidError:
+        raise
+    except Exception as e:
+        raise ConsentVidError(
+            f"could not resolve {did} to check which PDS hosts your account: {type(e).__name__}: {_safe(e)}"
+        ) from e
+    here = _session_pds(client)
+    if here is not None and _host(doc_pds) != _host(here):
+        return doc_pds
+    return None
+
+
+_MAIN_PASSWORD_SCOPE = "com.atproto.access"
+_PRIVILEGED_SCOPE = "com.atproto.appPassPrivileged"
+_TAKENDOWN_SCOPE = "com.atproto.takendown"
+
+
+def _session_scope(client) -> str | None:
+    try:
+        scope = client._session.access_jwt_payload.scope
+    except Exception:  # noqa: BLE001 — no session, or a token we can't decode
+        return None
+    return scope if isinstance(scope, str) else None
+
+
+def _check_session_scope(client, *, warn: bool) -> None:
+    """The reference PDS marks what a session's credential was in the access
+    token's scope. A taken-down account is refused; with ``warn``, a session
+    from the MAIN password (or a privileged app password) is flagged. Other
+    PDS implementations may use other scopes: those pass silently."""
+    scope = _session_scope(client)
+    if scope == _TAKENDOWN_SCOPE:
+        try:
+            client.com.atproto.server.delete_session(
+                headers=client._get_refresh_auth_headers(), ignore_session_check=True
+            )
+        except Exception:  # noqa: BLE001 — best effort
+            pass
+        SESSION_PATH.unlink(missing_ok=True)
+        raise ConfigError("this account is taken down")
+    if not warn:
+        return
+    if scope == _MAIN_PASSWORD_SCOPE:
+        _warn(
+            "that looks like your MAIN account password: ConsentVid has stored a full-access session. "
+            "Create an app password at https://bsky.app/settings/app-passwords, then run "
+            "`consentvid logout` and `consentvid login` with it."
+        )
+    elif scope == _PRIVILEGED_SCOPE:
+        _warn("this is a privileged app password; ConsentVid only needs a normal (non-privileged) one")
+
+
+_AUTH_ERRORS = frozenset({"ExpiredToken", "InvalidToken", "AuthenticationRequired", "AuthMissing"})
+
+
+def _definite_auth_failure(e: BaseException) -> bool:
+    """The cached session is dead (as opposed to the network or the PDS
+    having trouble, which must not burn a rate-limited createSession)."""
+    from atproto_client.exceptions import LoginRequiredError
+
+    if isinstance(e, LoginRequiredError):
+        return True
+    status = getattr(getattr(e, "response", None), "status_code", None)
+    content = getattr(getattr(e, "response", None), "content", None)
+    return status in (400, 401) and getattr(content, "error", None) in _AUTH_ERRORS
+
+
 def get_client() -> Client:
-    """An authenticated client: cached session, else credentials from env."""
+    """An authenticated client: cached session, else credentials from env.
+    Only a definitely dead session falls back to the credentials; network
+    and server errors are reported as such."""
+    client = None
     if SESSION_PATH.exists():
         client = _new_client()
         try:
-            client.login(session_string=SESSION_PATH.read_text().strip())
-            return client
-        except Exception:  # noqa: BLE001 — expired/invalid: fall back to credentials
-            pass
+            client._import_session_string(SESSION_PATH.read_text().strip())
+        except Exception:  # noqa: BLE001 — unreadable session file: as good as none
+            client = None
+    if client is not None:
+        try:
+            info = client.com.atproto.server.get_session()  # refreshes an expired access token
+        except Exception as e:
+            if not _definite_auth_failure(e):
+                if isinstance(e, AtProtocolError):
+                    raise ConsentVidError(f"could not check the cached session: {_xrpc_message(e)}") from e
+                raise ConsentVidError(f"could not check the cached session: {type(e).__name__}: {_safe(e)}") from e
+        else:
+            _set_me(client, info.did, info.handle)
+            _check_session_scope(client, warn=False)
+            # Before anything is uploaded or written: a session on a PDS the
+            # account has left (or a deactivated account) must not be used.
+            moved_to = _check_session_state(client, info)
+            if not moved_to:
+                return client
+            _end_cached_session()  # the old PDS's session: don't leave it live
+            SESSION_PATH.unlink(missing_ok=True)
+            _warn(f"your account moved to {_safe(moved_to)}; signing in again")
     handle = os.environ.get("CONSENTVID_HANDLE")
     pw = os.environ.get("CONSENTVID_APP_PASSWORD")
     if not handle or not pw:
@@ -200,9 +442,7 @@ def get_client() -> Client:
             "not logged in. Run `consentvid login` (use an app password from "
             "https://bsky.app/settings/app-passwords, never your main password)."
         )
-    client = _new_client()
-    client.login(handle, pw)
-    return client
+    return _session_client(handle, pw)
 
 
 def _list_all(client: Client, did: str, collection: str) -> list:
@@ -215,18 +455,88 @@ def _list_all(client: Client, did: str, collection: str) -> list:
 def _validate_flag(override: bool | None) -> bool | None:
     """Value for createRecord's `validate`. None = the PDS's default
     ("optimistic": validate lexicons it knows, accept others), which is the
-    right setting for third-party lexicons; True forces strict validation and
-    fails on PDSes that don't resolve them (bsky.social doesn't)."""
+    right setting for third-party lexicons; True forces strict validation,
+    which fails on any reference-implementation PDS today: it validates only
+    against its bundled lexicons and answers 'Unknown lexicon type'."""
     if override is not None:
         return override
     env = os.environ.get("CONSENTVID_VALIDATE", "").lower()
     return True if env in ("1", "true", "yes") else None
 
 
-def _check_before_write(nsid: str, record: dict, did: str) -> None:
-    errors = validate_in_repo(nsid, record, did) + write_policy_errors(nsid, record)
+def _check_before_write(nsid: str, record: dict, did: str, rkey: str | None = None) -> None:
+    """Validate before writing. ``rkey``: the key being written, or None when
+    the PDS assigns it."""
+    errors = validate_in_repo(nsid, record, did, rkey=rkey) + write_policy_errors(nsid, record)
     if errors:
-        raise ConsentVidError("record failed validation:\n  - " + "\n  - ".join(errors))
+        raise ConsentVidError("record failed validation:\n  - " + "\n  - ".join(_with_char_counts(errors, record)))
+
+
+def _with_char_counts(errors: list[str], record: dict) -> list[str]:
+    """Lexicon string limits are UTF-8 bytes; say how many characters that
+    is (a CJK character is 3 bytes)."""
+    out = []
+    for e in errors:
+        m = re.match(r"(\w+): (\d+) bytes exceeds maxLength (\d+)$", e)
+        value = record.get(m.group(1)) if m else None
+        if isinstance(value, str):
+            e = f"{e} ({len(value)} characters; the limit is in UTF-8 bytes)"
+        out.append(e)
+    return out
+
+
+def _xrpc_error_name(e: BaseException) -> str:
+    content = getattr(getattr(e, "response", None), "content", None)
+    return getattr(content, "error", None) or ""
+
+
+def _get_record_or_none(client: Client, did: str, collection: str, rkey: str):
+    """getRecord, or None if the record doesn't exist."""
+    try:
+        return client.com.atproto.repo.get_record({"repo": did, "collection": collection, "rkey": rkey})
+    except Exception as e:
+        if _xrpc_error_name(e) == "RecordNotFound" or "RecordNotFound" in str(e):
+            return None
+        raise
+
+
+def _rate_limited(e: BaseException) -> bool:
+    return getattr(getattr(e, "response", None), "status_code", None) == 429
+
+
+def _rate_limit_error(e: BaseException) -> ConsentVidError:
+    from consentvid.identity import rate_limit_reset
+
+    reset = rate_limit_reset(e)
+    until = (
+        f"until {datetime.fromtimestamp(reset).astimezone().strftime('%Y-%m-%d %H:%M %Z')}"
+        if reset
+        else "for now"
+    )
+    return ConsentVidError(
+        f"rate limited by your PDS {until}; re-run the same command (the uploaded bytes are kept)"
+    )
+
+
+def _note_validation(*results) -> None:
+    """Show the PDS's validationStatus ('valid' / 'unknown') when it gives one."""
+    for r in results:
+        status = getattr(r, "validation_status", None)
+        if isinstance(status, str):
+            click.echo(f"  PDS validation: {_safe(status)}")
+
+
+def _confirm_strict_validation(validate) -> None:
+    """--validate would be refused by the PDS only after the bytes are
+    uploaded: say so first, and go on only if the user insists."""
+    if _validate_flag(validate) is not True:
+        return
+    _warn(
+        "--validate (or CONSENTVID_VALIDATE) will likely be rejected by your PDS after the upload "
+        "('Unknown lexicon type': no PDS resolves third-party lexicons yet); the bytes would then be cleaned up"
+    )
+    if not _interactive() or not click.confirm("Continue with strict PDS validation?", default=False):
+        raise ConsentVidError("not uploading: drop --validate / unset CONSENTVID_VALIDATE")
 
 
 def _write_params(did, collection, record, validate, rkey=None) -> dict:
@@ -347,13 +657,38 @@ def _default_storage() -> str:
 # ------------------------------------------------------------- options -------
 
 
+def _normalise_language(ctx, param, value):
+    """Lowercase the primary subtag ('EN-gb' -> 'en-gb'): atproto readers
+    reject an uppercase one."""
+    if not value:
+        return value
+    primary, sep, rest = value.partition("-")
+    return primary.lower() + sep + rest
+
+
 def _video_options(f):
     for opt in reversed(
         [
-            click.option("--title", required=True, help="Short title (max 300 bytes)."),
-            click.option("--description", default="", help="Optional longer description."),
-            click.option("--language", default="", help="BCP-47 tag of spoken language, e.g. en, cs."),
-            click.option("--tag", "tags", multiple=True, help="Topic tag. Repeatable."),
+            click.option(
+                "--title", required=True, help="Short title: max 300 UTF-8 bytes (about 100 CJK characters)."
+            ),
+            click.option(
+                "--description",
+                default="",
+                help="Optional longer description: max 3000 UTF-8 bytes (about 1000 CJK characters).",
+            ),
+            click.option(
+                "--language",
+                default="",
+                callback=_normalise_language,
+                help="BCP-47 tag of spoken language, e.g. en, cs, pt-BR.",
+            ),
+            click.option(
+                "--tag",
+                "tags",
+                multiple=True,
+                help="Topic tag, max 64 UTF-8 bytes (about 21 CJK characters). Repeatable, at most 32.",
+            ),
             click.option(
                 "--storage-kind",
                 type=click.Choice(STORAGE_KINDS),
@@ -483,8 +818,9 @@ def _validate_option(f):
         "--validate/--no-validate",
         "validate",
         default=None,
-        help="Force (or disable) PDS-side lexicon validation. Default: the PDS's own "
-        "policy. Records are always validated locally first.",
+        help="Force (or disable) PDS-side lexicon validation. --validate fails on any "
+        "reference-implementation PDS today (none resolve third-party lexicons yet); leave it unset. "
+        "Records are always validated locally first.",
     )(f)
 
 
@@ -639,7 +975,13 @@ def _validation_view(record: dict) -> dict:
     return {**record, "storageRef": {**ref, "value": stand_in}}
 
 
-def _register(
+def _register(client: Client, video_path: Path, **opts):
+    """Register a video record (one createRecord). Returns (uri, cid, record)."""
+    uri, cid, record, _ = _register_impl(client, video_path, **opts)
+    return uri, cid, record
+
+
+def _register_impl(
     client: Client,
     video_path: Path,
     *,
@@ -652,8 +994,18 @@ def _register(
     keep_metadata,
     allow_duplicate,
     validate,
+    consent_for=None,
 ):
+    """Strip, hash, upload and write the video record.
+
+    With ``consent_for(video_uri, video_cid) -> consent record``, the video
+    and its consent are written in ONE atomic com.atproto.repo.applyWrites
+    commit, both under the same client-generated TID (the consent is the
+    video's sidecar), with the video's CID computed locally. Either both
+    records exist or neither does. Returns (uri, cid, record, consent) where
+    consent is None or (consent_uri, consent_cid, consent_record)."""
     from consentvid import storage
+    from consentvid.records import compute_cid, new_tid
 
     did = client.me.did
     kind = storage_kind or _default_storage()
@@ -673,6 +1025,7 @@ def _register(
         if errs:
             raise click.BadParameter(errs[0], param_hint="--storage-value")
 
+    _confirm_strict_validation(validate)
     _secure_config_dir()
     with tempfile.TemporaryDirectory(dir=CONFIG_DIR) as tmp:
         path, probe, content_hash = _prepare_bytes(video_path, kind, keep_metadata, Path(tmp), bool(storage_value))
@@ -714,10 +1067,19 @@ def _register(
         uploading = kind in storage.UPLOAD_KINDS and not storage_value
         if uploading:
             record["storageRef"]["value"] = _PENDING_UPLOAD
+        # A client-chosen key (createRecord and applyWrites both take one), so
+        # a write whose response is lost can be looked up afterwards.
+        rkey = new_tid()
+        video_uri = f"at://{did}/{VIDEO_NSID}/{rkey}"
         # Validate BEFORE uploading so a bad record never leaves orphaned bytes.
-        _check_before_write(VIDEO_NSID, _validation_view(record), did)
+        _check_before_write(VIDEO_NSID, _validation_view(record), did, rkey)
+        if consent_for:
+            _check_before_write(
+                CONSENT_NSID, consent_for(video_uri, compute_cid(_validation_view(record))), did, rkey
+            )
 
         uploaded = False  # True only if THIS call created the stored object
+        consent = None
         try:
             if uploading:
                 click.echo(f"Uploading to {kind} ...")
@@ -725,9 +1087,26 @@ def _register(
                 record["storageRef"]["value"] = result.value
                 uploaded = result.created
                 click.echo(f"  -> {record['storageRef']['value']}")
-                _check_before_write(VIDEO_NSID, record, did)
-            resp = client.com.atproto.repo.create_record(_write_params(did, VIDEO_NSID, record, validate))
-        except Exception:
+                _check_before_write(VIDEO_NSID, record, did, rkey)
+            if consent_for:
+                uri, cid, consent = _write_video_and_consent(client, did, rkey, record, consent_for, validate)
+            else:
+                resp = client.com.atproto.repo.create_record(_write_params(did, VIDEO_NSID, record, validate, rkey=rkey))
+                uri, cid = resp.uri, resp.cid
+                _note_validation(resp)
+        except Exception as e:
+            if _rate_limited(e):
+                # The PDS refused for now; a re-run reuses the stored bytes.
+                raise _rate_limit_error(e) from e
+            if not _definite_refusal(e):
+                # The request may have been committed and only the answer
+                # lost (a timeout, a dropped connection, a 5xx after the
+                # commit): look the records up by their known key.
+                outcome = _write_outcome(client, did, rkey, record, consent_for is not None)
+                if outcome is not None:
+                    click.secho("the PDS committed the write although the response was lost", fg="yellow")
+                    uri, cid, consent = outcome
+                    return uri, cid, record, consent
             if uploaded:
                 try:
                     other = _bytes_shared(client, did, record["storageRef"], content_hash)
@@ -742,7 +1121,108 @@ def _register(
                     except Exception as cleanup:  # noqa: BLE001
                         _warn(f"cleanup failed, remove manually: {cleanup}")
             raise
-    return resp.uri, resp.cid, record
+    return uri, cid, record, consent
+
+
+def _definite_refusal(e: BaseException) -> bool:
+    """The PDS answered the write with a 4xx: nothing was committed. Anything
+    else (a timeout, a network error, a 5xx, no answer) may have been
+    committed with only the response lost."""
+    from consentvid.identity import status_of
+
+    code = status_of(e)
+    if isinstance(code, int) and 400 <= code < 500:
+        return True
+    return _xrpc_error_name(e) in ("InvalidRequest", "InvalidSwap") or "InvalidSwap" in str(e)
+
+
+def _write_outcome(client: Client, did: str, rkey: str, video: dict, with_consent: bool):
+    """After a write whose outcome is unknown: did it commit? Returns
+    (video uri, video cid, consent or None) if the records are there as we
+    wrote them, None if nothing was written. Raises ConsentVidError if
+    that can't be told (the check failed, or something else is there)."""
+    from consentvid.records import compute_cid
+
+    unknown = ConsentVidError(
+        "the outcome of the write is unknown; run `consentvid list` to check (the uploaded bytes are kept)"
+    )
+    try:
+        got = _get_record_or_none(client, did, VIDEO_NSID, rkey)
+        consent = _get_record_or_none(client, did, CONSENT_NSID, rkey) if with_consent else None
+    except Exception as check:  # noqa: BLE001 — can't tell what happened
+        raise unknown from check
+    if got is None and consent is None:
+        return None  # nothing was written: the usual failure path
+    vcid = compute_cid(video)
+    if got is None or str(got.cid) != vcid:
+        raise unknown
+    uri = f"at://{did}/{VIDEO_NSID}/{rkey}"
+    if not with_consent:
+        return uri, vcid, None
+    value = to_dict(consent.value) if consent is not None else None
+    if value is None or value.get("videoCid") != vcid:
+        raise unknown
+    return uri, vcid, (f"at://{did}/{CONSENT_NSID}/{rkey}", str(consent.cid), value)
+
+
+def _write_video_and_consent(client: Client, did: str, rkey: str, video: dict, consent_for, validate):
+    """One applyWrites commit creating the video and its sidecar consent."""
+    from consentvid.records import compute_cid
+
+    video_uri = f"at://{did}/{VIDEO_NSID}/{rkey}"
+    vcid = compute_cid(video)
+    consent = consent_for(video_uri, vcid)
+    _check_before_write(CONSENT_NSID, consent, did, rkey)
+    params = {
+        "repo": did,
+        "writes": [
+            {"$type": "com.atproto.repo.applyWrites#create", "collection": VIDEO_NSID, "rkey": rkey, "value": video},
+            {"$type": "com.atproto.repo.applyWrites#create", "collection": CONSENT_NSID, "rkey": rkey, "value": consent},
+        ],
+    }
+    v = _validate_flag(validate)
+    if v is not None:
+        params["validate"] = v
+    resp = client.com.atproto.repo.apply_writes(params)
+    results = list(getattr(resp, "results", None) or [])
+    _note_validation(*results)
+    consent_uri = f"at://{did}/{CONSENT_NSID}/{rkey}"
+    consent_cid = str(results[1].cid) if len(results) > 1 and getattr(results[1], "cid", None) else compute_cid(consent)
+    if results and getattr(results[0], "cid", None) and str(results[0].cid) != vcid:
+        # The PDS stored the video under a different CID than we computed
+        # (it re-encoded the record?): re-pin the consent to the real one.
+        actual = str(results[0].cid)
+        _warn(f"the PDS assigned the video CID {_safe(actual)}, not {vcid}; re-pinning the consent to it")
+        consent = {**consent, "videoCid": actual}
+        _check_before_write(CONSENT_NSID, consent, did, rkey)
+        fix = _write_params(did, CONSENT_NSID, consent, validate, rkey=rkey)
+        fix["swapRecord"] = consent_cid
+        consent_cid = str(client.com.atproto.repo.put_record(fix).cid)
+        vcid = actual
+    return video_uri, vcid, (consent_uri, consent_cid, consent)
+
+
+def _consent_record(video_uri: str, video_cid: str, *, modalities, purposes, model_classes, expires_at,
+                    compensation, people, rights_basis, capture_provenance, **_ignored) -> dict:
+    record = {
+        "$type": CONSENT_NSID,
+        "videoUri": video_uri,
+        "videoCid": video_cid,
+        "modalities": list(dict.fromkeys(modalities)),
+        "purposes": list(dict.fromkeys(purposes)),
+        "modelClasses": list(dict.fromkeys(model_classes)),
+        "compensation": compensation,
+        "revocable": True,
+        "authorshipAttested": True,
+        "rightsBasis": rights_basis,
+        "captureProvenance": capture_provenance,
+        "peoplePresent": people,
+        "adultAttested": True,
+        "createdAt": now_iso(),
+    }
+    if expires_at:
+        record["expiresAt"] = _parse_expiry(expires_at)
+    return record
 
 
 def _attach(
@@ -762,6 +1242,8 @@ def _attach(
     replace,
     validate,
 ):
+    """Write the video's consent: a sidecar record under the video's own
+    record key, so the PDS itself keeps it to one per video."""
     _require_attestation(attest)
     if not (modalities and purposes and model_classes and people and adult):
         raise ConsentVidError("consent terms, --people and --attest-adult are required")
@@ -775,54 +1257,47 @@ def _attach(
             f"{video_uri} is not in your repo ({did}): you can only consent for videos you registered"
         )
     video = client.com.atproto.repo.get_record({"repo": did, "collection": VIDEO_NSID, "rkey": vat.rkey})
-
-    existing = sorted(
-        (
-            (r.uri, to_dict(r.value))
-            for r in _list_all(client, did, CONSENT_NSID)
-            if to_dict(r.value).get("videoUri") == str(vat)
-        ),
-        key=lambda x: x[1].get("createdAt", ""),
+    record = _consent_record(
+        str(vat),
+        str(video.cid),
+        modalities=modalities,
+        purposes=purposes,
+        model_classes=model_classes,
+        expires_at=expires_at,
+        compensation=compensation,
+        people=people,
+        rights_basis=rights_basis,
+        capture_provenance=capture_provenance,
     )
-    if existing and not replace:
-        raise ConsentVidError(
-            f"this video already has consent {existing[-1][0]}.\n"
-            "Pass --replace to change its terms (downstream datasets will see it as "
-            "modified), or `consentvid revoke` it first."
-        )
-
-    record = {
-        "$type": CONSENT_NSID,
-        "videoUri": str(vat),
-        "videoCid": str(video.cid),
-        "modalities": list(dict.fromkeys(modalities)),
-        "purposes": list(dict.fromkeys(purposes)),
-        "modelClasses": list(dict.fromkeys(model_classes)),
-        "compensation": compensation,
-        "revocable": True,
-        "authorshipAttested": True,
-        "rightsBasis": rights_basis,
-        "captureProvenance": capture_provenance,
-        "peoplePresent": people,
-        "adultAttested": True,
-        "createdAt": now_iso(),
-    }
-    if expires_at:
-        record["expiresAt"] = _parse_expiry(expires_at)
-    _check_before_write(CONSENT_NSID, record, did)
-
-    if existing:
-        keep_uri = existing[-1][0]
-        resp = client.com.atproto.repo.put_record(
-            _write_params(did, CONSENT_NSID, record, validate, rkey=parse_at_uri(keep_uri).rkey)
-        )
-        for old_uri, _ in existing[:-1]:  # legacy duplicates: superseded
-            client.com.atproto.repo.delete_record(
-                {"repo": did, "collection": CONSENT_NSID, "rkey": parse_at_uri(old_uri).rkey}
-            )
-            click.echo(f"Deleted superseded consent {old_uri}")
-        return resp.uri, resp.cid, record, True
-    resp = client.com.atproto.repo.create_record(_write_params(did, CONSENT_NSID, record, validate))
+    _check_before_write(CONSENT_NSID, record, did, vat.rkey)
+    consent_uri = f"at://{did}/{CONSENT_NSID}/{vat.rkey}"
+    exists_msg = (
+        f"this video already has consent {consent_uri}; pass --replace to change its terms "
+        "(downstream datasets will see it as modified) or `consentvid revoke` it"
+    )
+    params = _write_params(did, CONSENT_NSID, record, validate, rkey=vat.rkey)
+    if replace:
+        current = _get_record_or_none(client, did, CONSENT_NSID, vat.rkey)
+        if current is not None:
+            params["swapRecord"] = str(current.cid)
+            try:
+                resp = client.com.atproto.repo.put_record(params)
+            except Exception as e:
+                if _xrpc_error_name(e) == "InvalidSwap" or "InvalidSwap" in str(e):
+                    raise ConsentVidError("the consent changed concurrently; re-run") from e
+                raise
+            return resp.uri, resp.cid, record, True
+    try:
+        resp = client.com.atproto.repo.create_record(params)
+    except Exception as e:
+        # A create under an existing key fails on the PDS: say why.
+        try:
+            exists = _get_record_or_none(client, did, CONSENT_NSID, vat.rkey) is not None
+        except Exception:  # noqa: BLE001 — report the original error
+            exists = False
+        if exists:
+            raise ConsentVidError(exists_msg) from e
+        raise
     return resp.uri, resp.cid, record, False
 
 
@@ -849,15 +1324,22 @@ def main():
 
 @main.command()
 def login():
-    """Log in with an app password and cache the session (~/.consentvid)."""
-    handle = os.environ.get("CONSENTVID_HANDLE") or click.prompt("Handle (e.g. you.bsky.social)")
+    """Log in with an app password and cache the session (~/.consentvid).
+
+    Your PDS is found from your handle (handle -> DID -> DID document), so
+    the password only goes to the server that hosts your account.
+    CONSENTVID_SERVICE overrides that."""
+    handle = os.environ.get("CONSENTVID_HANDLE") or click.prompt("Handle or DID (e.g. you.bsky.social)")
     pw = os.environ.get("CONSENTVID_APP_PASSWORD") or click.prompt(
         "App password (bsky.app/settings/app-passwords)", hide_input=True
     )
-    client = _new_client()
-    click.echo(f"Signing in to {_service_url()} ...")
-    client.login(handle.removeprefix("@"), pw)
-    click.echo(f"Logged in as {client.me.handle} ({client.me.did})")
+    # A new login replaces the cached session: end the old one on its server
+    # first, or it stays live with nothing left to end it (R3-13).
+    if _end_cached_session():
+        click.echo("Ended the previous session.")
+    SESSION_PATH.unlink(missing_ok=True)
+    client = _session_client(handle, pw)
+    click.echo(f"Logged in as {_safe(client.me.handle)} ({client.me.did})")
 
 
 @main.command()
@@ -867,12 +1349,8 @@ def logout():
         click.echo("No cached session.")
         return
     try:
-        client = _new_client()
-        client._import_session_string(SESSION_PATH.read_text().strip())  # no network
         # deleteSession authenticates with the REFRESH token and invalidates it.
-        client.com.atproto.server.delete_session(
-            headers=client._get_refresh_auth_headers(), ignore_session_check=True
-        )
+        _end_cached_session(strict=True)
         click.echo("Server session ended.")
     except Exception as e:  # noqa: BLE001 — best effort: always remove the local copy
         _warn(f"could not end the session on the server ({type(e).__name__}: {e}); it expires on its own")
@@ -889,7 +1367,8 @@ def logout():
 def whoami():
     """Show the logged-in identity."""
     client = get_client()
-    click.echo(f"{client.me.handle} ({client.me.did})")
+    _check_session_scope(client, warn=True)
+    click.echo(f"{_safe(client.me.handle)} ({client.me.did})")
 
 
 @main.command("register-video")
@@ -928,6 +1407,9 @@ def attach_consent(video_uri, replace, validate, **terms):
 def contribute(video_path, validate, **opts):
     """Register a video AND attach consent in one step (the usual workflow).
 
+    Both records are written in one atomic commit: either both exist or
+    neither does.
+
     \b
     Example:
       consentvid contribute clip.mp4 --title "Making pasta" --tag cooking \\
@@ -953,14 +1435,14 @@ def contribute(video_path, validate, **opts):
     _require_terms(terms)  # fail before uploading anything
     _parse_expiry(terms["expires_at"])
     client = get_client()
-    uri, cid, record = _register(client, video_path, validate=validate, **opts)
+
+    def consent_for(video_uri, video_cid):
+        return _consent_record(video_uri, video_cid, **terms)
+
+    uri, cid, record, consent = _register_impl(client, video_path, validate=validate, consent_for=consent_for, **opts)
     click.secho("Created video record:", fg="green")
     click.echo(f"  uri:  {uri}\n  hash: {record['contentHash']}")
-    try:
-        c_uri, c_cid, c_record, _ = _attach(client, uri, replace=False, validate=validate, **terms)
-    except Exception:
-        _warn(f"video registered but consent failed; retry with: consentvid attach-consent {uri}")
-        raise
+    c_uri, c_cid, c_record = consent
     _print_consent(c_uri, c_cid, c_record)
 
 
@@ -994,6 +1476,8 @@ def list_records(what, as_json):
         for c in linked:
             cv = to_dict(c.value)
             state = " (EXPIRED)" if is_expired(cv) else ""
+            if c.uri.rsplit("/", 1)[-1] != r.uri.rsplit("/", 1)[-1]:
+                state += " (ignored: not keyed to its video)"
             click.echo(f"  consent: {_safe(c.uri)}{state}\n           {_safe(describe_terms(cv))}")
     for vuri, cs in by_video.items():
         for c in cs:
@@ -1002,22 +1486,87 @@ def list_records(what, as_json):
         click.echo("Nothing registered yet. Try: consentvid contribute --help")
 
 
+_APPLY_WRITES_MAX = 200  # reference PDS limit per applyWrites call
+
+
+def _delete_in_one_commit(
+    client: Client, did: str, targets: list[tuple[str, str]], swap_commit: str | None = None
+) -> None:
+    """Delete (collection, rkey) pairs with com.atproto.repo.applyWrites:
+    one atomic commit (several only past the 200-operation limit, in the
+    order given). ``swap_commit`` guards the first commit: the PDS refuses it
+    (InvalidSwap) if the repo head moved since it was read."""
+    for i in range(0, len(targets), _APPLY_WRITES_MAX):
+        chunk = targets[i : i + _APPLY_WRITES_MAX]
+        params = {
+            "repo": did,
+            "writes": [
+                {"$type": "com.atproto.repo.applyWrites#delete", "collection": c, "rkey": k} for c, k in chunk
+            ],
+        }
+        if swap_commit and i == 0:
+            params["swapCommit"] = swap_commit
+        client.com.atproto.repo.apply_writes(params)
+
+
+def _invalid_swap(e: BaseException) -> bool:
+    return _xrpc_error_name(e) == "InvalidSwap" or "InvalidSwap" in str(e)
+
+
+_REVOKE_ATTEMPTS = 5
+_revoke_sleep = time.sleep  # tests replace this
+
+
+def _revoke_fingerprint(video: dict, linked: list) -> tuple:
+    """What a confirmed video revoke deletes: the consent keys and the video
+    version (its storage pointer and content hash)."""
+    return (
+        tuple(sorted(k for _, k in linked)),
+        json.dumps(video.get("storageRef"), sort_keys=True),
+        video.get("contentHash"),
+    )
+
+
+def _show_revoke_plan(video: dict, linked: list, delete_bytes: bool) -> None:
+    ref = video.get("storageRef", {})
+    click.echo(f"Video {_safe(repr(video.get('title')))} ({_safe(ref.get('kind'))}: {_safe(ref.get('value'))})")
+    click.echo(f"  {len(linked)} consent receipt(s) will be deleted with it, in one commit.")
+    if delete_bytes:
+        click.echo("  The stored bytes will be deleted too.")
+
+
+def _video_revoke_plan(client: Client, did: str, uri: str, rkey: str):
+    """(repo head CID, video record, [(consent uri, rkey)]) for revoking a
+    video. The head is read first, so any write after it makes the guarded
+    applyWrites fail instead of leaving a consent behind."""
+    head = str(client.com.atproto.sync.get_latest_commit({"did": did}).cid)
+    video = to_dict(client.com.atproto.repo.get_record({"repo": did, "collection": VIDEO_NSID, "rkey": rkey}).value)
+    linked: dict[str, str] = {}
+    # The sidecar (same record key), whatever its videoUri says: readers
+    # ignore a mismatched one, but it would stay public as an orphan.
+    if _get_record_or_none(client, did, CONSENT_NSID, rkey) is not None:
+        linked[rkey] = f"at://{did}/{CONSENT_NSID}/{rkey}"
+    # Legacy consents keyed otherwise.
+    for r in _list_all(client, did, CONSENT_NSID):
+        try:
+            cat = parse_at_uri(r.uri, CONSENT_NSID)
+        except ValueError:
+            continue
+        if cat.did == did and to_dict(r.value).get("videoUri") == uri:
+            linked.setdefault(cat.rkey, r.uri)
+    return head, video, [(u, k) for k, u in linked.items()]
+
+
 @main.command()
 @click.argument("uri")
 @click.option(
     "--delete-bytes", is_flag=True, help="Also delete the video bytes from R2/PeerTube or unpin from IPFS."
 )
-@click.option(
-    "--all",
-    "all_for_video",
-    is_flag=True,
-    help="When revoking a consent, also withdraw your other consents for the same video "
-    "(otherwise the newest remaining one governs).",
-)
+@click.option("--all", "all_for_video", is_flag=True, hidden=True, help="Deprecated: no effect.")
 @click.option("-y", "--yes", is_flag=True, help="Don't ask for confirmation.")
 def revoke(uri, delete_bytes, all_for_video, yes):
     """Withdraw consent: delete a consent receipt, or a video together with all
-    its consents.
+    its consents (one atomic commit).
 
     Datasets learn about it when they run `consentvid resync`, and the AppView
     sees the deletion on the firehose immediately.
@@ -1032,51 +1581,52 @@ def revoke(uri, delete_bytes, all_for_video, yes):
         raise ConsentVidError(f"not a ConsentVid record: {at.collection}")
     if at.collection == CONSENT_NSID and delete_bytes:
         raise click.UsageError("--delete-bytes applies when revoking a video URI")
+    if all_for_video:
+        _warn("--all is deprecated and has no effect: a video has at most one consent")
     client = get_client()
     did = client.me.did
     if at.did != did:
         raise ConsentVidError(f"not your record (it belongs to {at.did})")
 
     if at.collection == CONSENT_NSID:
-        consents = [(r.uri, to_dict(r.value)) for r in _list_all(client, did, CONSENT_NSID)]
-        video_uri = next((v.get("videoUri") for u, v in consents if u == uri), None)
-        siblings = [u for u, v in consents if u != uri and video_uri and v.get("videoUri") == video_uri]
         if not yes:
             click.confirm(f"Withdraw consent {uri}?", abort=True)
         client.com.atproto.repo.delete_record({"repo": did, "collection": CONSENT_NSID, "rkey": at.rkey})
         click.secho(f"Withdrawn: {uri}", fg="green")
-        if siblings:
-            _warn(
-                f"{len(siblings)} other consent(s) for the same video remain; the newest of them "
-                "now governs this video:\n  " + "\n  ".join(siblings)
-            )
-            if all_for_video or (not yes and _interactive() and click.confirm("Withdraw them too?", default=True)):
-                for s_uri in siblings:
-                    client.com.atproto.repo.delete_record(
-                        {"repo": did, "collection": CONSENT_NSID, "rkey": parse_at_uri(s_uri).rkey}
-                    )
-                    click.secho(f"Withdrawn: {s_uri}", fg="green")
-            else:
-                click.echo("Withdraw them with `consentvid revoke <uri>`, or re-run with --all.")
         return
 
-    video = to_dict(
-        client.com.atproto.repo.get_record({"repo": did, "collection": VIDEO_NSID, "rkey": at.rkey}).value
-    )
-    linked = [r for r in _list_all(client, did, CONSENT_NSID) if to_dict(r.value).get("videoUri") == uri]
-    ref = video.get("storageRef", {})
-    click.echo(f"Video {_safe(repr(video.get('title')))} ({_safe(ref.get('kind'))}: {_safe(ref.get('value'))})")
-    click.echo(f"  {len(linked)} consent receipt(s) will be deleted with it.")
-    if delete_bytes:
-        click.echo("  The stored bytes will be deleted too.")
+    # Plan, confirm, commit. swapCommit guards the WHOLE repo, which is the
+    # contributor's everyday Bluesky repo: a like while the prompt waits must
+    # not make withdrawal fail. So the confirmation is for WHAT is deleted
+    # (the consents and the video version), and the commit re-reads the head
+    # right before it is sent, retrying a few times without asking again
+    # unless what would be deleted changed (R3-05).
+    _, video, linked = _video_revoke_plan(client, did, uri, at.rkey)
+    _show_revoke_plan(video, linked, delete_bytes)
     if not yes:
         click.confirm("Proceed?", abort=True)
-    for r in linked:
-        client.com.atproto.repo.delete_record(
-            {"repo": did, "collection": CONSENT_NSID, "rkey": parse_at_uri(r.uri).rkey}
-        )
-        click.echo(f"Withdrawn: {r.uri}")
-    client.com.atproto.repo.delete_record({"repo": did, "collection": VIDEO_NSID, "rkey": at.rkey})
+    confirmed = _revoke_fingerprint(video, linked)
+    for attempt in range(1, _REVOKE_ATTEMPTS + 1):
+        head, video, linked = _video_revoke_plan(client, did, uri, at.rkey)
+        if _revoke_fingerprint(video, linked) != confirmed:
+            _warn("what this revoke deletes changed since you confirmed it")
+            _show_revoke_plan(video, linked, delete_bytes)
+            if not yes:
+                click.confirm("Proceed?", abort=True)
+            confirmed = _revoke_fingerprint(video, linked)
+        targets = [(CONSENT_NSID, rkey) for _, rkey in linked] + [(VIDEO_NSID, at.rkey)]
+        try:
+            _delete_in_one_commit(client, did, targets, swap_commit=head)
+            break
+        except Exception as e:
+            if not _invalid_swap(e):
+                raise
+            if attempt == _REVOKE_ATTEMPTS:
+                raise ConsentVidError("your repo kept changing during revoke; re-run") from e
+            _revoke_sleep(random.uniform(0.2, 1.0))
+    ref = video.get("storageRef", {})  # the version that was actually deleted
+    for c_uri, _ in linked:
+        click.echo(f"Withdrawn: {c_uri}")
     click.echo(f"Deleted video record: {uri}")
     if delete_bytes:
         other = _bytes_shared(client, did, ref, video.get("contentHash"), exclude_uri=uri)
@@ -1153,36 +1703,37 @@ def export(output_path, repo, purposes, model_classes, modalities, tags, name, d
     """Write a Croissant-RAI manifest of one contributor's consented clips."""
     from consentvid.croissant import Clip, build_manifest
     from consentvid.identity import display_name, public_client, resolve_did
-    from consentvid.policy import covers, latest_per_video
+    from consentvid.policy import covers
 
     did = resolve_did(repo) if repo else _own_did()
     client = public_client(did)
     videos = {r.uri: (str(r.cid), to_dict(r.value)) for r in _list_all(client, did, VIDEO_NSID)}
-    consents, cids = [], {}
+    # Each video's consent is its sidecar: the consent with the video's own
+    # record key. Any other consent is ignored.
+    best, cids = {}, {}
     for r in _list_all(client, did, CONSENT_NSID):
         c = to_dict(r.value)
         if not isinstance(c, dict) or not isinstance(c.get("videoUri"), str):
             _warn(f"skipping malformed consent {_safe(r.uri)}")
             continue
-        consents.append((r.uri, c))
-        cids[r.uri] = str(r.cid)
-    # Supersession first (over ALL consents, invalid ones included), then
-    # validity, then expiry: an invalid or expired newer consent must not
-    # revive an older, broader one.
-    best, superseded = latest_per_video(consents)
-    for s in superseded:
-        _warn(f"ignoring superseded consent {_safe(s)} (a newer one exists for the same video)")
-    for vuri, (curi, c) in list(best.items()):
-        errors = validate_in_repo(CONSENT_NSID, c, did)
+        try:
+            cat = parse_at_uri(r.uri, CONSENT_NSID)
+            vat = parse_at_uri(c["videoUri"], VIDEO_NSID)
+        except ValueError as e:
+            _warn(f"skipping consent {_safe(r.uri)}: {_safe(e)}")
+            continue
+        if cat.did != did or vat.rkey != cat.rkey:
+            _warn(f"ignored consent {_safe(r.uri)}: record key doesn't match its video")
+            continue
+        errors = validate_in_repo(CONSENT_NSID, c, did, rkey=cat.rkey)
         if errors:
-            _warn(
-                f"leaving out {_safe(vuri)}: its newest consent {_safe(curi)} is invalid "
-                f"({_safe(errors[0])}), so nothing is granted"
-            )
-            del best[vuri]
-        elif is_expired(c):
-            _warn(f"skipping expired consent {_safe(curi)}")
-            del best[vuri]
+            _warn(f"leaving out {_safe(c['videoUri'])}: its consent {_safe(r.uri)} is invalid ({_safe(errors[0])})")
+            continue
+        if is_expired(c):
+            _warn(f"skipping expired consent {_safe(r.uri)}")
+            continue
+        best[c["videoUri"]] = (r.uri, c)
+        cids[r.uri] = str(r.cid)
 
     handle = display_name(did)
     clips = []
@@ -1191,7 +1742,10 @@ def export(output_path, repo, purposes, model_classes, modalities, tags, name, d
             _warn(f"consent {_safe(curi)} references missing video {_safe(vuri)}")
             continue
         vcid, v = videos[vuri]
-        if c.get("videoCid") and c["videoCid"] != vcid:
+        if validate_in_repo(VIDEO_NSID, v, did, rkey=parse_at_uri(vuri).rkey):
+            _warn(f"skipping {_safe(curi)}: its video record is invalid")
+            continue
+        if c["videoCid"] != vcid:  # validate_in_repo requires videoCid
             _warn(f"skipping {_safe(curi)}: video record changed after consent was given")
             continue
         if not covers(c, purposes=purposes, model_classes=model_classes, modalities=modalities):
@@ -1215,7 +1769,14 @@ def export(output_path, repo, purposes, model_classes, modalities, tags, name, d
 @main.command()
 @click.argument("uri")
 @click.option("--json", "as_json", is_flag=True)
-def verify(uri, as_json):
+@click.option(
+    "--no-relay-status",
+    "no_relay_status",
+    is_flag=True,
+    help="Don't ask the relay (getRepoStatus) whether the contributor's account is active, e.g. "
+    "offline. By default a relay-level takedown makes a clip unavailable.",
+)
+def verify(uri, as_json, no_relay_status):
     """Cryptographically verify a record against its author's repo (no login).
 
     Checks the commit signature against the DID's key and the Merkle proof of
@@ -1228,7 +1789,17 @@ def verify(uri, as_json):
     except ValueError as e:
         raise click.BadParameter(str(e), param_hint="URI") from None
     rec = fetch_verified(at)
-    errors = validate_in_repo(at.collection, rec.value, at.did) if rec.present else []
+    errors = validate_in_repo(at.collection, rec.value, at.did, rkey=at.rkey) if rec.present else []
+    relay = relay_lag = None
+    if rec.present and not no_relay_status:
+        from consentvid.appview import is_operational
+        from consentvid.resync import relay_status_of
+
+        answer = relay_status_of(at.did)
+        if is_operational(answer):
+            relay_lag = answer[1]  # the relay's own processing state, not the account's (R3-01)
+        elif answer is not None and not answer[0]:
+            relay = answer[1] or "inactive"
     if as_json:
         click.echo(
             json.dumps(
@@ -1239,6 +1810,8 @@ def verify(uri, as_json):
                     "rev": rec.rev,
                     "proven": rec.proven,
                     "errors": errors,
+                    "relayStatus": relay,
+                    "relayProcessingStatus": relay_lag,
                     "value": rec.value,
                 },
                 indent=2,
@@ -1252,8 +1825,12 @@ def verify(uri, as_json):
         click.echo(f"  cid: {_safe(rec.cid)}\n  rev: {_safe(rec.rev)}")
         if errors:
             click.secho("  INVALID: " + "; ".join(_safe(e) for e in errors), fg="red")
+        if relay:
+            click.secho(f"  UNAVAILABLE: the relay reports the account {_safe(relay)}", fg="red")
+        elif relay_lag:
+            click.secho(f"  note: relay reports {_safe(relay_lag)}; live indexes may be stale", fg="yellow")
         click.echo(json.dumps(rec.value, indent=2, default=str))
-    if not rec.present or errors:
+    if not rec.present or errors or relay:
         sys.exit(1)
 
 
@@ -1295,7 +1872,14 @@ _MARK = {
 @click.option("--check", is_flag=True, help="Exit with status 1 if any clip must be dropped.")
 @click.option("--json", "as_json", is_flag=True)
 @click.option("--workers", default=8, show_default=True, help="Parallel checks.")
-def resync(input_path, write_path, min_provenance, strict, check, as_json, workers):
+@click.option(
+    "--no-relay-status",
+    "no_relay_status",
+    is_flag=True,
+    help="Don't ask the relay (getRepoStatus) whether the contributor's account is active, e.g. "
+    "offline. By default a relay-level takedown makes a clip unavailable.",
+)
+def resync(input_path, write_path, min_provenance, strict, check, as_json, workers, no_relay_status):
     """Verify that every clip's consent still stands, before you use a dataset.
 
     INPUT_PATH is a Croissant manifest or a C2PA-stamped video file. Each
@@ -1335,7 +1919,9 @@ def resync(input_path, write_path, min_provenance, strict, check, as_json, worke
     if not items:
         raise ConsentVidError("no clips with consent receipts found")
 
-    results = rs.check_all(items, min_provenance=min_provenance, workers=workers)
+    results = rs.check_all(
+        items, min_provenance=min_provenance, workers=workers, relay_status=not no_relay_status
+    )
     drop_statuses = rs.DROP_STATUSES + ((rs.UNKNOWN,) if strict else ())
     n_drop = sum(r.status in drop_statuses for r in results)
     if as_json:
@@ -1387,7 +1973,7 @@ def embed_c2pa(video_path, consent_uri, output_path):
     The file must be exactly the registered bytes. Needs the [c2pa] extra.
     """
     from consentvid import c2pa_embed as ce
-    from consentvid.identity import display_name
+    from consentvid.identity import verified_handle
     from consentvid.verify import fetch_verified
 
     try:
@@ -1397,14 +1983,18 @@ def embed_c2pa(video_path, consent_uri, output_path):
     consent = fetch_verified(consent_at)
     if not consent.present:
         raise ConsentVidError(f"{consent_uri} does not exist (withdrawn?)")
-    errors = validate_in_repo(CONSENT_NSID, consent.value, consent_at.did)
+    errors = validate_in_repo(CONSENT_NSID, consent.value, consent_at.did, rkey=consent_at.rkey)
     if errors:
         raise ConsentVidError(f"consent is invalid: {errors[0]}")
     video_uri = consent.value["videoUri"]
-    video = fetch_verified(video_uri)
+    video_at = parse_at_uri(video_uri, VIDEO_NSID)
+    video = fetch_verified(video_at)
     if not video.present:
         raise ConsentVidError(f"the consent's video {video_uri} no longer exists")
-    if consent.value.get("videoCid") and consent.value["videoCid"] != video.cid:
+    errors = validate_in_repo(VIDEO_NSID, video.value, video_at.did, rkey=video_at.rkey)
+    if errors:
+        raise ConsentVidError(f"the consent's video record is invalid: {errors[0]}")
+    if consent.value["videoCid"] != video.cid:  # validate_in_repo requires videoCid
         raise ConsentVidError("the video record changed after consent was given; consent no longer applies")
     actual = hash_file(video_path)
     if actual != video.value.get("contentHash"):
@@ -1422,7 +2012,7 @@ def embed_c2pa(video_path, consent_uri, output_path):
         video_uri=video_uri,
         video_cid=video.cid,
         video=video.value,
-        contributor_handle=display_name(consent_at.did),
+        contributor_handle=_verified_handle(consent_at.did, lambda d: verified_handle(d, raise_errors=True)),
         contributor_did=consent_at.did,
     )
     click.secho(f"Embedded C2PA consent manifest -> {out}", fg="green")
@@ -1432,6 +2022,22 @@ def embed_c2pa(video_path, consent_uri, output_path):
         "`consentvid resync` reports it UNBOUND: the receipt points at the consent but does "
         "not prove this file is the consented bytes. Share the registered bytes for training."
     )
+
+
+def _verified_handle(did: str, verify_handle) -> str | None:
+    """The DID's bidirectionally verified handle (``verify_handle`` is
+    identity.verified_handle), or None. Never the DID or an unverified
+    claim: a handle field must not carry something that isn't a handle."""
+    from consentvid.identity import HandleLookupError
+
+    try:
+        handle = verify_handle(did)
+    except HandleLookupError as e:
+        _warn(f"handle not included: lookup failed ({_safe(e)})")
+        return None
+    except Exception:  # noqa: BLE001 — no verified handle
+        return None
+    return handle if isinstance(handle, str) else None
 
 
 @main.command("read-c2pa")
@@ -1465,51 +2071,145 @@ def read_c2pa(video_path):
 
 @main.command("publish-lexicons")
 @click.option("--nsid", "nsids", multiple=True, help="Only these NSIDs (default: all).")
-def publish_lexicons(nsids):
-    """Publish the lexicons as com.atproto.lexicon.schema records in your repo."""
+@click.option(
+    "--bootstrap",
+    is_flag=True,
+    help="Allow publishing although no _lexicon DNS record names an authority yet (first publication).",
+)
+@click.option(
+    "--allow-breaking",
+    is_flag=True,
+    help="Skip the lexicon-evolution check. Only for a brand-new NSID: a published lexicon may "
+    "only gain optional fields and descriptions.",
+)
+@click.option(
+    "--skip-pds-validation",
+    is_flag=True,
+    help="Send validate=false (escape hatch if your PDS rejects the com.atproto.lexicon.schema record).",
+)
+def publish_lexicons(nsids, bootstrap, allow_breaking, skip_pds_validation):
+    """Publish the lexicons as com.atproto.lexicon.schema records in your repo.
+
+    Only the lexicon authority may publish: the account named by the
+    _lexicon.<authority> DNS TXT record. Each change is checked against the
+    published version with the lexicon evolution rules first (also with
+    --bootstrap, against whatever your repo already holds), and written with
+    compare-and-swap: a schema that changed meanwhile is never overwritten."""
     from consentvid import lexicons as lx
+    from consentvid.identity import public_client
 
     client = get_client()
+    me = client.me.did
     targets = list(nsids) or lx.discover_lexicons()
+    plans = []
     for nsid in targets:
-        record = lx.build_schema_record(lx.load_lexicon(nsid))
-        client.com.atproto.repo.put_record(
-            {
-                "repo": client.me.did,
-                "collection": lx.SCHEMA_COLLECTION,
-                "rkey": nsid,
-                "validate": False,
-                "record": record,
-            }
-        )
-        click.echo(f"Published {nsid} -> at://{client.me.did}/{lx.SCHEMA_COLLECTION}/{nsid}")
+        try:
+            auth = lx.resolve_did_via_dns(nsid, strict=True)
+        except lx.ConflictingLexiconRecords as e:
+            raise ConsentVidError(str(e)) from None
+        if auth is None and not bootstrap:
+            raise ConsentVidError(
+                f"no {lx.dns_record_name(nsid)} TXT record: pass --bootstrap to publish the first version, "
+                f'then add  {lx.dns_record_name(nsid)}  TXT  "did={me}"'
+            )
+        if auth is not None and auth != me:
+            raise ConsentVidError(
+                f"you are not the lexicon authority for {lx.nsid_authority(nsid)} "
+                f"(DNS names {_safe(auth)}, you are {me}); refusing to publish unofficial schemas"
+            )
+        local = lx.load_lexicon(nsid)
+        # Whatever is published already (with --bootstrap: in your own repo)
+        # is checked against the evolution rules, and its CID guards the write.
+        published = _get_record_or_none(public_client(auth or me), auth or me, lx.SCHEMA_COLLECTION, nsid)
+        if published is not None and not allow_breaking:
+            old = {k: v for k, v in to_dict(published.value).items() if k != "$type"}
+            problems = lx.compat_errors(old, local)
+            if problems:
+                raise ConsentVidError(
+                    f"{nsid}: the change breaks the lexicon evolution rules (use a new NSID instead):\n  - "
+                    + "\n  - ".join(problems)
+                )
+        plans.append((nsid, lx.build_schema_record(local), str(published.cid) if published is not None else None))
+    for nsid, record, existing_cid in plans:
+        params = {"repo": me, "collection": lx.SCHEMA_COLLECTION, "rkey": nsid, "record": record}
+        if skip_pds_validation:
+            params["validate"] = False
+        try:
+            if existing_cid is None:
+                # createRecord fails if the key appeared meanwhile.
+                client.com.atproto.repo.create_record(params)
+            else:
+                client.com.atproto.repo.put_record({**params, "swapRecord": existing_cid})
+        except Exception as e:
+            text = f"{_xrpc_error_name(e)} {e}"
+            if "InvalidSwap" in text or "already exists" in text.lower():
+                raise ConsentVidError(
+                    f"{nsid}: the published schema changed while you were publishing; re-run"
+                ) from e
+            if not isinstance(e, AtProtocolError):
+                raise
+            hint = "" if skip_pds_validation else " (if your PDS rejects valid lexicons, retry with --skip-pds-validation)"
+            raise ConsentVidError(f"{nsid}: {_xrpc_message(e)}{hint}") from e
+        click.echo(f"Published {nsid} -> at://{me}/{lx.SCHEMA_COLLECTION}/{nsid}")
     by_authority = {lx.nsid_authority(n): n for n in targets}
     for auth, nsid in sorted(by_authority.items()):
-        if lx.resolve_did_via_dns(nsid) == client.me.did:
+        try:
+            points_at_me = lx.resolve_did_via_dns(nsid) == me
+        except ConsentVidError as e:
+            _warn(f"could not check _lexicon.{auth}: {_safe(e)}")
+            continue
+        if points_at_me:
             click.echo(f"DNS _lexicon.{auth} already points at you.")
         else:
-            click.echo(f'Add DNS TXT:  _lexicon.{auth}  "did={client.me.did}"')
+            click.echo(f'Add DNS TXT:  _lexicon.{auth}  "did={me}"')
+
+
+def _verified_lexicon(did: str, nsid: str) -> dict:
+    """The schema record for ``nsid`` in ``did``'s repo, verified like any
+    record (commit signature + MST proof), with the $type and id the lexicon
+    spec requires. Raises ConsentVidError with a one-line reason."""
+    from consentvid import lexicons as lx
+    from consentvid.errors import RepoUnavailable, VerificationError
+    from consentvid.verify import fetch_verified
+
+    uri = f"at://{did}/{lx.SCHEMA_COLLECTION}/{nsid}"
+    try:
+        rec = fetch_verified(uri)
+    except (VerificationError, RepoUnavailable) as e:
+        raise ConsentVidError(f"{uri} could not be verified: {_safe(e)}") from e
+    if not rec.present:
+        raise ConsentVidError(f"{uri} does not exist")
+    value = rec.value or {}
+    if value.get("$type") != lx.SCHEMA_COLLECTION:
+        raise ConsentVidError(f"{uri} has $type {_safe(value.get('$type'))!r}, not {lx.SCHEMA_COLLECTION}")
+    if value.get("id") != nsid:
+        raise ConsentVidError(f"{uri} declares id {_safe(value.get('id'))!r}, not {nsid}")
+    return value
 
 
 @main.command("resolve-lexicon")
 @click.argument("nsid")
 @click.option("--did", "did_override", default=None, help="Skip DNS; read from this DID.")
 def resolve_lexicon(nsid, did_override):
-    """Resolve a lexicon like a validator would (DNS -> DID -> schema record)
-    and compare it with the local copy. No login needed."""
+    """Resolve a lexicon like a validator would (DNS -> DID -> schema record),
+    verify the record against the authority's repo, and compare it with the
+    local copy. No login needed."""
     from consentvid import lexicons as lx
-    from consentvid.identity import public_client
+    from consentvid.errors import LexiconDnsError
 
-    did = did_override or lx.resolve_did_via_dns(nsid)
+    try:
+        did = did_override or lx.resolve_did_via_dns(nsid, strict=True)
+    except lx.ConflictingLexiconRecords as e:
+        raise ConsentVidError(f"{e}: resolution fails until only one remains") from None
+    except LexiconDnsError as e:
+        raise ConsentVidError(f"DNS error: {e}") from None
     if not did:
         raise ConsentVidError(f"no TXT record at {lx.dns_record_name(nsid)}")
     click.echo(f"{lx.dns_record_name(nsid)} -> {_safe(did)}")
-    resp = public_client(did).com.atproto.repo.get_record(
-        {"repo": did, "collection": lx.SCHEMA_COLLECTION, "rkey": nsid}
-    )
-    click.echo(f"Resolved {_safe(resp.uri)}")
+    value = _verified_lexicon(did, nsid)
+    click.echo(f"Resolved at://{_safe(did)}/{lx.SCHEMA_COLLECTION}/{nsid}: verified (commit signature + MST proof)")
     try:
-        same = lx.schema_matches(lx.load_lexicon(nsid), to_dict(resp.value))
+        same = lx.schema_matches(lx.load_lexicon(nsid), value)
     except FileNotFoundError:
         click.echo("(no local copy to compare)")
         return
@@ -1528,7 +2228,7 @@ def doctor():
     from consentvid import appview as av
     from consentvid import lexicons as lx
     from consentvid import media, storage
-    from consentvid.identity import public_client
+    from consentvid.errors import LexiconDnsError
 
     def line(ok, label, detail=""):
         mark, color = {True: ("ok", "green"), False: ("!!", "red"), None: ("--", "yellow")}[ok]
@@ -1547,7 +2247,7 @@ def doctor():
             )
     try:
         client = get_client()
-        line(True, "logged in", f"{client.me.handle} ({client.me.did})")
+        line(True, "logged in", f"{_safe(client.me.handle)} ({client.me.did})")
     except Exception as e:  # noqa: BLE001
         line(False, "logged in", _safe((str(e).splitlines() or [""])[0]))
     line(
@@ -1572,20 +2272,23 @@ def doctor():
         line(None, "c2pa extra", 'not installed (pip install "consentvid[c2pa]")')
     for nsid in lx.discover_lexicons():
         try:
-            did = lx.resolve_did_via_dns(nsid)
+            try:
+                did = lx.resolve_did_via_dns(nsid, strict=True)
+            except lx.ConflictingLexiconRecords:
+                line(False, f"lexicon {nsid}", f"conflicting _lexicon TXT records at {lx.dns_record_name(nsid)}")
+                continue
+            except LexiconDnsError as e:
+                line(False, f"lexicon {nsid}", f"DNS error: {_safe(e)}")
+                continue
             if not did:
                 line(None, f"lexicon {nsid}", "no _lexicon DNS record")
                 continue
-            pub = to_dict(
-                public_client(did)
-                .com.atproto.repo.get_record({"repo": did, "collection": lx.SCHEMA_COLLECTION, "rkey": nsid})
-                .value
-            )
+            pub = _verified_lexicon(did, nsid)
             same = lx.schema_matches(lx.load_lexicon(nsid), pub)
             line(
                 same,
                 f"lexicon {nsid}",
-                "published, up to date" if same else "published copy is outdated: run publish-lexicons",
+                "published, verified, up to date" if same else "published copy is outdated: run publish-lexicons",
             )
         except Exception as e:  # noqa: BLE001
             line(False, f"lexicon {nsid}", _safe(str(e)[:100]))
@@ -1594,10 +2297,19 @@ def doctor():
         line(True, "appview index", f"{s['consents']} consents, {s['videos']} videos, cursor {s['cursor']}")
         if s.get("gap_since"):
             line(
-                None,
+                False,
                 "appview gap",
-                f"events after {s['gap_since']} may be missing (oversized message); run `consentvid appview backfill`",
+                f"events after {s['gap_since']} may be missing; repair: consentvid appview backfill --all",
             )
+        if s.get("pending_backfill"):
+            line(
+                None,
+                "appview pending",
+                f"{s['pending_backfill']} repo(s) queued for a re-read ({s.get('pending_retrying', 0)} retrying); "
+                "`appview index` re-reads them, `consentvid appview backfill --pending` forces it",
+            )
+        if not s["consents"] and not s["videos"]:
+            line(None, "appview empty", "fill it with: consentvid appview backfill --all")
     else:
         line(None, "appview index", "not created yet")
 
@@ -1610,29 +2322,150 @@ def appview():
     """Index ConsentVid records from the whole network (local SQLite)."""
 
 
-@appview.command("backfill")
-@click.argument("repos", nargs=-1, required=True)
-def appview_backfill(repos):
-    """Index existing records from one or more contributors (handles or DIDs)."""
+def _relay_url(value: str | None) -> str:
     from consentvid import appview as av
+    from consentvid.storage import require_https
 
+    return require_https("--relay", value or os.environ.get("CONSENTVID_RELAY") or av.DEFAULT_RELAY).rstrip("/")
+
+
+@appview.command("backfill")
+@click.argument("repos", nargs=-1)
+@click.option(
+    "--all",
+    "all_repos",
+    is_flag=True,
+    help="Every contributor: repos the relay lists (com.atproto.sync.listReposByCollection) plus every "
+    "repo already in the index. Repairs a gap.",
+)
+@click.option("--pending", is_flag=True, help="Repos queued for a re-read (#sync, reactivated accounts).")
+@click.option(
+    "--relay",
+    default=None,
+    help="Relay for discovery and repo status. Default: $CONSENTVID_RELAY, else relay1.us-east.bsky.network.",
+)
+def appview_backfill(repos, all_repos, pending, relay):
+    """Index existing records from contributors (handles or DIDs, --all, or --pending)."""
+    from consentvid import appview as av
+    from consentvid.records import is_did
+
+    if not (repos or all_repos or pending):
+        raise click.UsageError("name contributors (handles or DIDs), or pass --all or --pending")
+    relay = _relay_url(relay)
     conn = av.connect()
-    for repo in repos:
+    # A gap recorded while this run lists repos covers events after what it
+    # already read: only the gap seen now may be cleared at the end (R2-07).
+    gap_at_start = av.gap_token(conn)
+    targets: list[str] = list(repos)
+    if all_repos:
+        listed: list[str] = []
+        for nsid in (VIDEO_NSID, CONSENT_NSID):
+            listed += av.list_repos_by_collection(relay, nsid)
+        known = av.known_dids(conn)
+        click.echo(f"Relay lists {len(set(listed))} repo(s); the index knows {len(known)}.")
+        targets += sorted(set(listed) | known)
+    if pending or all_repos:
+        targets += av.pending_dids(conn)
+    seen, failures, done = set(), 0, 0
+    for repo in targets:
+        key = repo if is_did(repo) else repo.lower().removeprefix("@")
+        if key in seen:
+            continue
+        seen.add(key)
         try:
-            stored, invalid = _backfill_repo(conn, repo)
+            # _backfill_repo settles the repo's pending row itself (cleared,
+            # or kept while the relay lags: R3-01).
+            did, stored, invalid = _backfill_repo(conn, repo, relay=relay)
         except Exception as e:  # noqa: BLE001 — one bad repo must not stop the others
             conn.rollback()
+            failures += 1
             _warn(f"{_safe(repo)}: backfill failed ({type(e).__name__}: {_safe(e)}); continuing")
             continue
+        done += 1
         click.echo(f"{_safe(repo)}: {stored} record(s) indexed, {invalid} skipped")
+    if all_repos and not failures:
+        if av.clear_gap_if(conn, gap_at_start):
+            if gap_at_start[0] is not None:
+                click.echo("Gap repaired.")
+        else:
+            _warn("a new gap was recorded during this run; run `consentvid appview backfill --all` again")
+    click.echo(f"{done} repo(s) backfilled, {failures} failed.")
+    if failures and av.get_gap(conn):
+        _warn("the gap stays recorded until every repo backfills; re-run `consentvid appview backfill --all`")
 
 
-def _backfill_repo(conn, repo: str) -> tuple[int, int]:
+def _repo_statuses(did: str, relay: str) -> list[tuple[bool, str | None] | None]:
+    """getRepoStatus from the contributor's PDS and from the relay; None for
+    a source that couldn't answer. RepoNotFound counts as "deleted" only when
+    the other source doesn't vouch for the repo: a relay only knows the repos
+    it crawls, and the PDS only those it hosts."""
+    from consentvid import appview as av
+    from consentvid.errors import RepoUnavailable
+    from consentvid.identity import public_client, with_retry
+
+    pds: tuple[bool, str | None] | str | None
+    try:
+        st = with_retry(lambda: public_client(did).com.atproto.sync.get_repo_status({"did": did}))
+        pds = (bool(st.active), getattr(st, "status", None))
+    except RepoUnavailable as e:
+        # A tombstoned DID (plc.directory, a trust root) is deleted, whatever
+        # a relay still remembers. Other identity failures say nothing.
+        pds = (False, "deleted") if e.status == "deleted" else None
+    except Exception as e:  # noqa: BLE001
+        pds = "not-found" if _xrpc_error_name(e) == "RepoNotFound" else None
+    rel: tuple[bool, str | None] | str | None
+    try:
+        rel = av.relay_repo_status(relay, did)
+    except RepoUnavailable:
+        rel = "not-found"
+    except Exception:  # noqa: BLE001
+        rel = None
+
+    def resolve(mine, other):
+        if mine != "not-found":
+            return mine
+        # A relay that is throttling a repo still knows it exists (R3-01).
+        vouched = isinstance(other, tuple) and (other[0] or av.is_operational(other))
+        return None if vouched or other is None else (False, "deleted")
+
+    return [resolve(pds, rel), resolve(rel, pds)]
+
+
+_STATUS_SEVERITY = ("deleted", "takendown", "suspended", "deactivated")
+
+
+def _combine_status(answers) -> tuple[bool, str | None] | None:
+    """The most restrictive answer: inactive if any source says so; active
+    only if every source answered active; None if that can't be decided.
+    A relay processing status (throttled, host-throttled, desynchronized) is
+    not an account status and casts no vote (R3-01; see _relay_lag)."""
+    from consentvid.appview import is_operational
+
+    answers = [a for a in answers if not is_operational(a)]
+    inactive = [a for a in answers if a is not None and not a[0]]
+    if inactive:
+        statuses = [a[1] for a in inactive]
+        for s in _STATUS_SEVERITY:
+            if s in statuses:
+                return False, s
+        return False, statuses[0]
+    if answers and all(a is not None and a[0] for a in answers):
+        return True, None
+    return None
+
+
+def _backfill_repo(conn, repo: str, relay: str | None = None) -> tuple[str, int, int]:
+    """Re-read one repo into the index. Returns (did, stored, invalid).
+
+    The repo status (PDS + relay getRepoStatus, or a tombstoned DID) is
+    decided first: a deactivated, taken-down, suspended or deleted repo is
+    not listed at all (its PDS refuses listRecords, and the sync spec says to
+    treat it as unavailable). Its status is recorded and the backfill counts
+    as done, so `--all` can clear a gap that hid its #account event (R2-01)."""
     from consentvid import appview as av
     from consentvid.identity import public_client, resolve_did
 
     did = resolve_did(repo)
-    client = public_client(did)
     # Fence: anything the live indexer writes for this repo from now on is
     # newer than our listing, and must win over it (R3-07).
     # Timestamps have millisecond precision: start the fence on a fresh
@@ -1640,9 +2473,15 @@ def _backfill_repo(conn, repo: str) -> tuple[int, int]:
     before = now_iso()
     while (started := now_iso()) == before:
         time.sleep(0.0002)
-    # Read everything BEFORE writing: the listing is unbounded-latency network
-    # I/O against an untrusted PDS and must not run while we hold the
+    # Read everything BEFORE writing: the listing and the status checks are
+    # network I/O against untrusted hosts and must not run while we hold the
     # database's write lock (the live indexer would time out behind us).
+    answers = _repo_statuses(did, _relay_url(relay))
+    status = _combine_status(answers)
+    if status is not None and not status[0]:
+        return _record_inactive_repo(conn, did, status[1], started)
+    relay_lag = _relay_lag(answers)
+    client = public_client(did)
     listings = {collection: _list_all(client, did, collection) for collection in (VIDEO_NSID, CONSENT_NSID)}
     stored = invalid = skipped = 0
     # Take the write lock, then see what changed while we were listing.
@@ -1654,8 +2493,10 @@ def _backfill_repo(conn, repo: str) -> tuple[int, int]:
             row["uri"]
             for row in conn.execute(
                 "SELECT uri FROM consents WHERE did = ? AND "
-                "max(indexed_at, COALESCE(revoked_at, ''), COALESCE(invalid_at, '')) >= ?",
-                (did, started),
+                "max(indexed_at, COALESCE(revoked_at, ''), COALESCE(invalid_at, '')) >= ? "
+                # A delete seen live for a consent the index never had (R1-07).
+                "UNION SELECT uri FROM consent_tombstones WHERE did = ? AND deleted_at >= ?",
+                (did, started, did, started),
             )
         },
         VIDEO_NSID: {
@@ -1712,21 +2553,90 @@ def _backfill_repo(conn, repo: str) -> tuple[int, int]:
             if collection == VIDEO_NSID:
                 av.delete_video(conn, uri)
             else:
-                av.revoke_consent(conn, uri, "consent deleted")
+                av.delete_consent(conn, uri)
+    # Hosting status from the PDS and the relay (getRepoStatus), never a
+    # blind "active": a takedown seen live must not be undone (R1-10).
     acct = conn.execute("SELECT updated_at FROM accounts WHERE did = ?", (did,)).fetchone()
     if acct is None or acct["updated_at"] < started:
-        av.set_account_status(conn, did, True, None)
+        if status is None:
+            _warn(f"{did}: could not confirm the repo status with both the PDS and the relay; account status unchanged")
+        else:
+            av.set_account_status(conn, did, *status)
+    if relay_lag:
+        # The PDS is the authority and was just read, but the relay is not
+        # (fully) forwarding this repo's events, so the live index can't keep
+        # it current: keep it hidden and re-check it later (R3-01).
+        lag_until = format_dt(datetime.now(UTC) + timedelta(seconds=av.RELAY_LAG_RECHECK_S))
+        av.mark_relay_lag(conn, did, relay_lag, next_try=lag_until)
+    else:
+        # The listing started after any #sync seen so far: the repo is current.
+        av.clear_desync(conn, did, started)
+        av.clear_pending(conn, did, started)
     conn.commit()
     if skipped:
         click.echo(f"  {skipped} record(s) skipped (changed during backfill; the live index is newer)")
-    return stored, invalid
+    if relay_lag:
+        click.echo(f"{did}: relay reports {_safe(relay_lag)}; listed from the PDS but hidden until the relay catches up")
+    return did, stored, invalid
+
+
+def _relay_lag(answers) -> str | None:
+    """The relay processing status among ``answers`` (throttled,
+    host-throttled, desynchronized), if any."""
+    from consentvid.appview import is_operational
+
+    return next((a[1] for a in answers if is_operational(a)), None)
+
+
+def _record_inactive_repo(conn, did: str, status: str | None, started: str) -> tuple[str, int, int]:
+    """Record that ``did`` is not active, without listing it. Rows of a
+    deactivated/taken-down/suspended account are kept (hidden by active=0;
+    reactivation queues a backfill); a deleted account is purged."""
+    from consentvid import appview as av
+
+    if conn.in_transaction:
+        conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        acct = conn.execute("SELECT updated_at FROM accounts WHERE did = ?", (did,)).fetchone()
+        if acct is None or acct["updated_at"] < started:  # a live #account event since then wins
+            av.set_account_status(conn, did, False, status)
+        av.clear_pending(conn, did, started)
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    click.echo(f"{did}: account {status or 'inactive'}; not listed")
+    return did, 0, 0
+
+
+def _drain_repo(did: str) -> None:
+    """Re-read one pending repo for the indexer's drain task (R3-02). Runs in
+    a worker thread, so it opens its own database connection. _backfill_repo
+    clears the pending row on success, or keeps it (due again in an hour)
+    while the relay reports a processing status (R3-01)."""
+    from consentvid import appview as av
+
+    conn = av.connect()
+    try:
+        _backfill_repo(conn, did)
+    finally:
+        conn.close()
 
 
 @appview.command("index")
 @click.option("--stop-after", type=int, default=None, help="Exit after N relevant events.")
-def appview_index(stop_after):
+@click.option(
+    "--no-drain",
+    is_flag=True,
+    help="Don't re-read pending repos (#sync, reactivations, relay lag) in the background; "
+    "leave them to `appview backfill --pending`.",
+)
+def appview_index(stop_after, no_drain):
     """Follow the firehose (Jetstream) and keep the index current. Resumes from
-    where it stopped."""
+    where it stopped. Repos queued for a re-read (a #sync, a reactivated
+    account, a relay that reports throttled/desynchronized) are re-read in the
+    background, one at a time, with backoff on failure."""
     from consentvid import appview as av
 
     conn = av.connect()
@@ -1739,7 +2649,10 @@ def appview_index(stop_after):
     try:
         n = asyncio.run(
             av.index_loop(
-                conn, on_event=lambda op, x: click.echo(f"  [{_safe(op)}] {_safe(x)}"), stop_after=stop_after
+                conn,
+                on_event=lambda op, x: click.echo(f"  [{_safe(op)}] {_safe(x)}"),
+                stop_after=stop_after,
+                drain=None if no_drain else _drain_repo,
             )
         )
         click.echo(f"Processed {n} events.")
@@ -1752,8 +2665,22 @@ def appview_stats():
     """Show index counts and freshness."""
     from consentvid import appview as av
 
-    for k, v in av.stats(av.connect()).items():
+    conn = av.connect()
+    s = av.stats(conn)
+    for k, v in s.items():
         click.echo(f"{k + ':':<19}{v}")
+    if s["gap_since"]:
+        _warn(f"events after {s['gap_since']} may be missing; repair: consentvid appview backfill --all")
+    elif not s["consents"] and not s["videos"]:
+        click.echo("The index is empty; fill it with: consentvid appview backfill --all")
+    if s["pending_backfill"]:
+        click.echo(
+            f"{s['pending_backfill']} repo(s) queued for a re-read (`appview index` re-reads them; "
+            "`consentvid appview backfill --pending` forces it):"
+        )
+        for row in av.pending_rows(conn):
+            due = f", next try {row['next_try']}" if row["next_try"] else ""
+            click.echo(f"  {row['did']}: {_safe(row['reason'])} ({row['attempts']} failed attempt(s){due})")
 
 
 @appview.command("revocations")
@@ -1866,8 +2793,8 @@ def appview_export(output_path, purposes, model_classes, modalities, provenance,
         try:
             consent, video = json.loads(r["record"]), json.loads(r["video_record"])
             # Re-validate: the index may predate today's rules.
-            if validate_in_repo(CONSENT_NSID, consent, r["did"]) or validate_in_repo(
-                VIDEO_NSID, video, r["did"]
+            if validate_in_repo(CONSENT_NSID, consent, r["did"], rkey=r["rkey"]) or validate_in_repo(
+                VIDEO_NSID, video, r["did"], rkey=parse_at_uri(r["video_uri"]).rkey
             ):
                 raise ValueError("no longer valid")
         except Exception as e:  # noqa: BLE001 — one bad row must not abort the export

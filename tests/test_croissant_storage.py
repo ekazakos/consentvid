@@ -4,19 +4,19 @@ from pathlib import Path
 
 import pytest
 
-from conftest import ALICE, VIDEO_CID, consent_record, video_record
+from conftest import ALICE, K1, VIDEO_CID, consent_record, video_record
 from consentvid.croissant import LICENSE_URL, Clip, build_manifest
-from consentvid.policy import covers, latest_per_video
+from consentvid.policy import covers
 from consentvid.storage import public_url
 
 
 def clip(storage=None, **ckw):
     v = video_record(mimeType="video/mp4", **({"storageRef": storage} if storage else {}))
     return Clip(
-        f"at://{ALICE}/org.consentvid.consent/c1",
+        f"at://{ALICE}/org.consentvid.consent/{K1}",
         "bafyc",
         consent_record(**ckw),
-        f"at://{ALICE}/org.consentvid.video/v1",
+        f"at://{ALICE}/org.consentvid.video/{K1}",
         VIDEO_CID,
         v,
         ALICE,
@@ -50,16 +50,9 @@ def test_manifest_validates_as_croissant(tmp_path):
     mlc.Dataset(jsonld=str(p))
 
 
-def test_policy_all_of_and_latest():
+def test_policy_all_of():
     c = consent_record(purposes=["training", "evaluation"])
     assert covers(c, purposes=["training"]) and not covers(c, purposes=["training", "benchmarking"])
-    best, superseded = latest_per_video(
-        [
-            ("old", consent_record(createdAt="2026-01-01T00:00:00Z")),
-            ("new", consent_record(createdAt="2026-02-01T00:00:00Z")),
-        ]
-    )
-    assert list(best.values())[0][0] == "new" and superseded == ["old"]
 
 
 CID = "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi"
@@ -496,3 +489,16 @@ def test_require_https(monkeypatch, url, ok):
     assert storage.require_https("X", "http://localhost:9000") == "http://localhost:9000"
     with pytest.raises(ConfigError):
         storage.require_https("X", "http://evil.example")
+
+
+def test_manifest_cites_consentvid_not_a_client_app():
+    """R3-14: the dataset URL is ConsentVid's, each creator is their DID."""
+    from conftest import ALICE, consent_record, video_record
+    from consentvid.croissant import Clip, build_manifest
+
+    clip = Clip(f"at://{ALICE}/org.consentvid.consent/3maaaaaaaaab2", "bafyc", consent_record(),
+                f"at://{ALICE}/org.consentvid.video/3maaaaaaaaab2", "bafyv", video_record(), ALICE, "alice.test")
+    m, _ = build_manifest([clip], name="t")
+    assert "bsky.app" not in json.dumps(m)
+    assert m["url"] == "https://consentvid.org" and m["citeAs"].endswith("https://consentvid.org")
+    assert m["creator"] == [{"@type": "sc:Person", "name": "alice.test", "identifier": ALICE, "sameAs": f"at://{ALICE}"}]

@@ -18,15 +18,32 @@ record, every distribution entry accounted for), so a Croissant loader cannot
 see a file that resync did not check, and ``--write`` builds a fresh manifest
 from the verified records alone.
 
-The contributor's newest consent for a video governs, even when it fails
-validation (then nothing is granted): an invalid newer record never revives
-older, broader terms.
+A video has at most one consent: the consent's record key must equal the
+video's (the sidecar rule, enforced by validate_in_repo), so the PDS itself
+refuses a second one. A manifest entry whose consent is not keyed to its video
+is INVALID; rewriting the consent changes its CID, which is reported as
+MODIFIED from the MST-proven record, so no unverified listing is consulted.
+
+Layered moderation: a relay can take an account down while its own PDS keeps
+serving signed records. So after the PDS verifies a consent, the relay's
+com.atproto.sync.getRepoStatus is asked too (once per DID per process; relay
+from $CONSENTVID_RELAY, default relay1.us-east.bsky.network). An inactive
+account status (takendown, suspended, deactivated, deleted, or one we don't
+know) makes the clip UNAVAILABLE; the relay's own processing statuses
+(throttled, host-throttled, desynchronized: appview.RELAY_OPERATIONAL_STATUSES)
+do not, and only add a note. RepoNotFound or a network error tells us nothing
+and keeps the PDS verdict. When the PDS itself can't be read (5xx, network),
+an inactive account status from the relay turns UNKNOWN into UNAVAILABLE
+(never REVOKED). ``relay_status=False`` (CLI ``--no-relay-status``) skips
+the relay for offline use.
 
 No login is needed: everything read here is public.
 """
 
 from __future__ import annotations
 
+import os
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, fields
 from datetime import datetime
@@ -43,7 +60,6 @@ from consentvid.croissant import (
     build_manifest,
 )
 from consentvid.errors import ConsentVidError, RepoUnavailable, VerificationError
-from consentvid.policy import consent_order_key
 from consentvid.records import (
     CONSENT_NSID,
     VIDEO_NSID,
@@ -291,12 +307,12 @@ def validate_manifest_shape(manifest) -> None:
     creators = [creators] if isinstance(creators, dict) else creators  # legacy: one object
     if not isinstance(creators, list) or not all(
         isinstance(p, dict)
-        and set(p) <= {"@type", "name", "identifier"}
+        and set(p) <= {"@type", "name", "identifier", "sameAs"}
         and p.get("@type", "sc:Person") == "sc:Person"
         and all(isinstance(x, str) for x in p.values())
         for p in creators
     ):
-        raise ConsentVidError("manifest creator must be a list of sc:Person {name, identifier}")
+        raise ConsentVidError("manifest creator must be a list of sc:Person {name, identifier, sameAs}")
     if manifest.get("recordSet", []) != []:
         raise ConsentVidError("manifest recordSet must be empty (ConsentVid manifests define none)")
     if not isinstance(manifest.get("distribution"), list):
@@ -580,8 +596,54 @@ def _fetch_failure(what: str, e: Exception) -> tuple[str, str]:
     return INVALID, f"could not verify {what}: {type(e).__name__}: {e}"
 
 
-def _newest_key(created, uri: str) -> tuple[str, str]:
-    return consent_order_key(uri, created)
+# ---------------------------------------------------------- relay status ---
+
+
+def _relay_url() -> str:
+    from consentvid.appview import DEFAULT_RELAY
+    from consentvid.storage import require_https
+
+    return require_https("CONSENTVID_RELAY", os.environ.get("CONSENTVID_RELAY") or DEFAULT_RELAY).rstrip("/")
+
+
+def _relay_lookup_impl(did: str) -> tuple[bool, str | None] | None:
+    """(active, status) per the relay, or None when it says nothing useful
+    (RepoNotFound: a relay only knows repos it crawls; network errors)."""
+    from consentvid.appview import relay_repo_status
+
+    try:
+        return relay_repo_status(_relay_url(), did)
+    except Exception:  # noqa: BLE001 — no information: keep the PDS verdict
+        return None
+
+
+_relay_lookup = _relay_lookup_impl  # tests replace this (offline by default)
+_relay_cache: dict[str, tuple[float, tuple[bool, str | None] | None]] = {}
+_relay_locks: dict[str, threading.Lock] = {}
+_relay_guard = threading.Lock()
+
+
+def relay_status_of(did: str) -> tuple[bool, str | None] | None:
+    """The relay's view of ``did``, asked at most once per DID per
+    IDENTITY_TTL, even from concurrent check_all workers."""
+    import time
+
+    from consentvid.identity import IDENTITY_TTL
+
+    with _relay_guard:
+        lock = _relay_locks.setdefault(did, threading.Lock())
+    with lock:
+        hit = _relay_cache.get(did)
+        if hit is not None and time.monotonic() - hit[0] <= IDENTITY_TTL:
+            return hit[1]
+        answer = _relay_lookup(did)
+        _relay_cache[did] = (time.monotonic(), answer)
+        return answer
+
+
+def clear_relay_cache() -> None:
+    with _relay_guard:
+        _relay_cache.clear()
 
 
 # ----------------------------------------------------------------- check ---
@@ -593,10 +655,10 @@ def check(
     now: datetime | None = None,
     min_provenance: str | None = None,
     fetch=fetch_verified,
-    list_consents=None,
+    relay_status: bool = True,
 ) -> Result:
-    """Classify one clip. ``list_consents(did) -> [(uri, value)]`` enables the
-    supersession check (a newer consent for the same video governs)."""
+    """Classify one clip. ``relay_status``: also ask the relay whether the
+    account is active (see the module docstring)."""
     res = Result(item.id, item.name, item.consent_uri, UNKNOWN)
 
     def done(status, reason="", verified=False):
@@ -625,6 +687,22 @@ def check(
         return done(MODIFIED, "manifest's contributor differs from the consent's repo")
     if is_expired({"expiresAt": item.expires_at}, now):
         return done(EXPIRED, f"expired at {item.expires_at}")
+    notes: list[str] = []  # caveats carried into a VALID reason
+
+    def pds_failure(what: str, e: Exception) -> Result:
+        """A failed PDS read. If it is only "couldn't check" (UNKNOWN), a
+        relay that knows the account is gone settles it as UNAVAILABLE (a
+        PDS answering 500 for repos it no longer hosts would otherwise keep
+        the clip UNKNOWN forever). Never REVOKED: a relay's word is not a
+        signed proof of withdrawal."""
+        status, reason = _fetch_failure(what, e)
+        if status == UNKNOWN and relay_status:
+            from consentvid.appview import is_operational
+
+            answer = relay_status_of(consent_at.did)
+            if answer is not None and answer[0] is False and not is_operational(answer):
+                return done(UNAVAILABLE, f"PDS unreachable; relay reports account {answer[1] or 'inactive'}")
+        return done(status, reason)
 
     # -- consent ------------------------------------------------------------
     try:
@@ -636,11 +714,25 @@ def check(
     except VerificationError as e:
         return done(INVALID, f"consent proof failed: {e}")
     except Exception as e:  # noqa: BLE001 — network & SDK errors
-        return done(*_fetch_failure("consent", e))
+        return pds_failure("consent", e)
     if not consent.present:
         return done(REVOKED, "consent withdrawn (record deleted)", consent.proven)
+    if relay_status:
+        from consentvid.appview import is_operational
+
+        answer = relay_status_of(consent_at.did)
+        if answer is not None and not answer[0]:
+            if is_operational(answer):
+                # throttled / host-throttled / desynchronized describe the
+                # relay's own processing, not the account: the PDS has just
+                # proven the consent, so it stands.
+                notes.append(f"relay reports {answer[1]}; live index may be stale")
+            else:
+                # 'deleted' too: the PDS still serves the repo, so no
+                # revocation is claimed; the clip just can't be used.
+                return done(UNAVAILABLE, f"relay reports account {answer[1] or 'inactive'}")
     c = consent.value
-    errors = validate_in_repo(CONSENT_NSID, c, consent_at.did)
+    errors = validate_in_repo(CONSENT_NSID, c, consent_at.did, rkey=consent_at.rkey)
     if errors:
         return done(INVALID, f"consent invalid: {errors[0]}", True)
     res.captureProvenance = c.get("captureProvenance")
@@ -655,46 +747,23 @@ def check(
     if is_expired(c, now):
         return done(EXPIRED, f"expired at {c.get('expiresAt')}", True)
 
-    # -- superseded by a newer consent for the same video ---------------------
-    # The contributor's latest signed statement governs even when it fails our
-    # rules (then nothing is granted): only the contributor can write that
-    # repo, so an invalid newer record must never revive older, broader terms.
-    if list_consents is not None:
-        mine = _newest_key(c.get("createdAt"), item.consent_uri)
-        try:
-            newer = [
-                (uri, v)
-                for uri, v in list_consents(consent_at.did)
-                if uri != item.consent_uri
-                and isinstance(v, dict)
-                and v.get("videoUri") == c["videoUri"]
-                # unparseable createdAt: can't be ordered, so fail closed
-                and (normalize_dt(v.get("createdAt")) is None or _newest_key(v.get("createdAt"), uri) > mine)
-            ]
-        except Exception as e:  # noqa: BLE001
-            return done(*_fetch_failure("contributor's consent list", e))
-        if newer:
-            uri, v = max(newer, key=lambda x: (normalize_dt(x[1].get("createdAt")) is None, _newest_key(x[1].get("createdAt"), x[0])))
-            errors = validate_in_repo(CONSENT_NSID, v, consent_at.did)
-            why = f" (which is invalid: nothing is granted; {errors[0]})" if errors else ""
-            return done(MODIFIED, f"superseded by newer consent {uri}{why}", False)
-
     # -- video it binds to ----------------------------------------------------
+    video_at = parse_at_uri(c["videoUri"], VIDEO_NSID)
     try:
-        video = fetch(parse_at_uri(c["videoUri"], VIDEO_NSID))
+        video = fetch(video_at)
     except RepoUnavailable as e:
         return done(UNAVAILABLE, f"video repo {e.status}")
     except VerificationError as e:
         return done(INVALID, f"video proof failed: {e}")
     except Exception as e:  # noqa: BLE001
-        return done(*_fetch_failure("video", e))
+        return pds_failure("video", e)
     if not video.present:
         return done(REVOKED, "video withdrawn (record deleted)", video.proven)
     v = video.value
-    errors = validate_in_repo(VIDEO_NSID, v, consent_at.did)
+    errors = validate_in_repo(VIDEO_NSID, v, consent_at.did, rkey=video_at.rkey)
     if errors:
         return done(INVALID, f"video record invalid: {errors[0]}", True)
-    if c.get("videoCid") and video.cid != c["videoCid"]:
+    if video.cid != c["videoCid"]:  # validate_in_repo requires videoCid
         return done(MODIFIED, "video record changed after consent was given", True)
     if item.video_cid and video.cid != item.video_cid:
         return done(MODIFIED, "video record changed since export", True)
@@ -739,33 +808,16 @@ def check(
     formats = {rebuilt["encodingFormat"]} | ({LEGACY_ENCODING_FORMAT} if item.legacy else set())
     if item.encoding_format not in formats:
         return done(MODIFIED, "manifest's encodingFormat differs from the signed video record", True)
-    notes = []
-    if not c.get("videoCid"):
-        notes.append("legacy consent: not pinned to a video version")
     if not item.consent_cid:
         notes.append("manifest does not pin the consent CID")
     res._verified = clip
     return done(VALID, "; ".join(notes), True)
 
 
-def _list_consents(did: str) -> list[tuple[str, dict]]:
-    from consentvid.identity import list_all, public_client
-    from consentvid.records import to_dict
-
-    return [(r.uri, to_dict(r.value)) for r in list_all(public_client(did), did, CONSENT_NSID)]
-
-
-def check_all(items: list[Item], *, workers: int = 8, list_consents=_list_consents, **kw) -> list[Result]:
-    cache: dict[str, list] = {}
-
-    def cached(did):
-        if did not in cache:
-            cache[did] = list_consents(did)
-        return cache[did]
-
+def check_all(items: list[Item], *, workers: int = 8, **kw) -> list[Result]:
     def safe(it: Item) -> Result:
         try:
-            return check(it, list_consents=cached, **kw)
+            return check(it, **kw)
         except Exception as e:  # noqa: BLE001 — one bad clip must not abort the run
             # Fail closed: an unexpected error is never "couldn't reach the
             # network", so --lenient must not keep it.

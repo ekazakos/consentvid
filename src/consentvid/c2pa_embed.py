@@ -39,7 +39,7 @@ from consentvid import __version__
 from consentvid.errors import ConfigError, ConsentVidError
 from consentvid.paths import secure_dir, write_private
 from consentvid.records import mime_for as _mime
-from consentvid.records import normalize_dt
+from consentvid.records import normalize_dt, now_iso
 
 CONSENT_ASSERTION_LABEL = "org.consentvid.consent"
 _SIGNER_DIR = Path(os.environ.get("CONSENTVID_HOME", Path.home() / ".consentvid")) / "c2pa"
@@ -234,17 +234,27 @@ def build_manifest_definition(
     video_uri: str,
     video_cid: str,
     video: dict,
-    contributor_handle: str,
+    contributor_handle: str | None,
     contributor_did: str,
 ) -> dict:
-    """Assemble the C2PA manifest definition with the consent assertion."""
+    """Assemble the C2PA manifest definition with the consent assertion.
+
+    ``contributor_handle`` must be the DID's bidirectionally verified handle,
+    or None: handles are mutable display names, the DID is the identifier,
+    and a DID is never put in a field called 'handle'."""
+    contributor = {"did": contributor_did}
+    author = {"@type": "Person", "name": contributor_handle or contributor_did, "identifier": contributor_did}
+    if contributor_handle:
+        contributor["handle"] = contributor_handle
+        contributor["handleVerifiedAt"] = now_iso()
+        author["alternateName"] = contributor_handle
     receipt = {
         "consentUri": consent_uri,
         "consentCid": consent_cid,
         "videoUri": video_uri,
         "videoCid": video_cid,
         "contentHash": video.get("contentHash"),
-        "contributor": {"handle": contributor_handle, "did": contributor_did},
+        "contributor": contributor,
         "purposes": consent.get("purposes", []),
         "modelClasses": consent.get("modelClasses", []),
         "modalities": consent.get("modalities", []),
@@ -273,13 +283,7 @@ def build_manifest_definition(
                 "data": {
                     "@context": "https://schema.org",
                     "@type": "CreativeWork",
-                    "author": [
-                        {
-                            "@type": "Person",
-                            "name": contributor_handle,
-                            "identifier": contributor_did,
-                        }
-                    ],
+                    "author": [author],
                 },
             },
             {
@@ -312,7 +316,7 @@ def embed_consent(
     video_uri: str,
     video_cid: str,
     video: dict,
-    contributor_handle: str,
+    contributor_handle: str | None,
     contributor_did: str,
 ) -> Path:
     """Embed the consent receipt as a signed C2PA manifest, writing out_path."""

@@ -10,7 +10,9 @@ dependencies = [
     "atproto>=0.0.65,<0.1",
     "click>=8.1",
     "python-dotenv>=1.0",
-    "websockets>=13.0",
+    # >= 14: websockets.connect raises InvalidStatus carrying the HTTP body,
+    # which is how a Jetstream v2 CursorTooOld rejection is recognised.
+    "websockets>=14.0",
     "dnspython>=2.9",
     # TLS trust path for plc.directory / PDS reads (resync's trusted root):
     # GHSA-6q48-6c7w-9gw2 (compromised emSign intermediates) fixed in 2026.10.18.

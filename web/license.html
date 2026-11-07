@@ -54,6 +54,16 @@
   contributor's signed repository; withdrawn, expired or modified clips must be deleted from your
   copies. Clips that <code>resync</code> could not check are dropped too.</p>
 
+  <h2>For contributors: records are public</h2>
+  <p>Your video and consent records are public ATproto records. Relays, Jetstream and anyone
+  indexing the network copy them as you write them. Deleting a record withdraws consent, and
+  well-behaved indexes drop it, but deletion is not erasure: copies made before it can persist.
+  Only the metadata you publish is in the records (title, description, tags, hashes, the storage
+  pointer and the consent terms), so publish nothing there you would not want copied. Deleting or
+  deactivating your ATproto account does <em>not</em> delete the video bytes on R2, IPFS or
+  PeerTube: run <code>consentvid revoke &lt;video-uri&gt; --delete-bytes</code> for each video
+  first.</p>
+
   <h2>Models trained before a withdrawal</h2>
   <p>Withdrawal does not affect the lawfulness of use before it (GDPR Art. 7(3)). A model trained in
   good faith on clips that were valid at a <code>resync</code> made before training stays

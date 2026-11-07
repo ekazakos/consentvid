@@ -155,8 +155,10 @@ def build_manifest(
     purposes = sorted({p for c in used for p in c.consent.get("purposes", [])})
     classes = sorted({m for c in used for m in c.consent.get("modelClasses", [])})
     modalities = sorted({m for c in used for m in c.consent.get("modalities", [])})
-    single = contributors[0] if len(contributors) == 1 else None
-    url = f"https://bsky.app/profile/{single[0]}" if single else "https://consentvid.org"
+    # The dataset's home is ConsentVid, never one client app's profile page:
+    # contributors need not be indexed by any particular AppView. Each
+    # creator is identified by their DID (identifier) and its at:// URI.
+    url = "https://consentvid.org"
 
     manifest = {
         "@context": CROISSANT_CONTEXT,
@@ -177,7 +179,8 @@ def build_manifest(
         "url": url,
         "citeAs": f"{name} ({today}). ConsentVid dataset. {url}",
         "creator": [
-            {"@type": "sc:Person", "name": handle or did, "identifier": did} for did, handle in contributors
+            {"@type": "sc:Person", "name": handle or did, "identifier": did, "sameAs": f"at://{did}"}
+            for did, handle in contributors
         ],
         "distribution": distribution,
         "recordSet": [],

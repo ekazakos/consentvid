@@ -9,6 +9,8 @@ ALICE = "did:plc:aliceaaaaaaaaaaaaaaaaaaa"
 BOB = "did:plc:bobbbbbbbbbbbbbbbbbbbbbb"
 VIDEO_CID = "bafyreie7sjgnuat5jzpmmnv6wr6hiyvpa4upftobv2rllnci5pleenf2xq"
 HASH = "sha256-" + "ab" * 32
+# Record keys (type tid). A consent shares its video's key (sidecar rule).
+K0, K1, K2, K3 = "3maaaaaaaaaa2", "3maaaaaaaaab2", "3maaaaaaaaac2", "3maaaaaaaaad2"
 
 
 @pytest.fixture(autouse=True)
@@ -24,7 +26,24 @@ def _isolated_home(tmp_path, monkeypatch):
     ):
         monkeypatch.delenv(var, raising=False)
     import consentvid.cli as cli
+    import consentvid.identity as identity
+    import consentvid.resync as resync
 
+    # Retries (with_retry) never really sleep in tests, and every test starts
+    # with a full retry budget.
+    monkeypatch.setattr(identity, "_sleep", lambda s: None)
+    identity.reset_retry_budget()
+    import consentvid.verify as verify
+
+    verify._refreshed.clear()
+    verify._moved.clear()
+
+    # resync asks the relay for the account status: offline unless a test
+    # restores resync._relay_lookup_impl.
+    monkeypatch.setattr(resync, "_relay_lookup", lambda did: None)
+    resync.clear_relay_cache()
+
+    monkeypatch.setattr(cli, "_revoke_sleep", lambda s: None)
     monkeypatch.setattr(cli, "CONFIG_DIR", tmp_path / "home")
     monkeypatch.setattr(cli, "SESSION_PATH", tmp_path / "home" / "session.txt")
     monkeypatch.setattr(cli, "_load_env", lambda: None)
@@ -50,7 +69,7 @@ def video_record(**kw):
     return rec
 
 
-def consent_record(did=ALICE, rkey="v1", **kw):
+def consent_record(did=ALICE, rkey=K1, **kw):
     rec = {
         "$type": "org.consentvid.consent",
         "videoUri": f"at://{did}/org.consentvid.video/{rkey}",
@@ -72,13 +91,17 @@ def consent_record(did=ALICE, rkey="v1", **kw):
 
 
 class FakeRepo:
-    """In-memory stand-in for com.atproto.repo on one PDS."""
+    """In-memory stand-in for com.atproto.repo on one PDS. Like a real PDS:
+    a create under an existing key fails, swapRecord is enforced, and
+    applyWrites is all-or-nothing."""
 
     def __init__(self, did=ALICE):
         self.did = did
         self.records = {}  # (collection, rkey) -> (cid, value)
         self.n = 0
         self.calls = []
+        self.fail_apply = None  # exception applyWrites raises (nothing written)
+        self.head = 1  # repo head commit counter (sync.getLatestCommit)
 
     def _cid(self):
         self.n += 1
@@ -87,19 +110,57 @@ class FakeRepo:
     def create_record(self, p):
         self.calls.append(("create", p))
         rkey = p.get("rkey") or f"r{self.n + 1}"
+        if (p["collection"], rkey) in self.records:
+            raise RuntimeError("InvalidRequest: Record already exists")
         cid = self._cid()
         self.records[(p["collection"], rkey)] = (cid, p["record"])
         return SimpleNamespace(uri=f"at://{self.did}/{p['collection']}/{rkey}", cid=cid)
 
     def put_record(self, p):
         self.calls.append(("put", p))
+        key = (p["collection"], p["rkey"])
+        if "swapRecord" in p and (self.records.get(key) or (None,))[0] != p["swapRecord"]:
+            raise RuntimeError("InvalidSwap: Record was at another version")
         cid = self._cid()
-        self.records[(p["collection"], p["rkey"])] = (cid, p["record"])
+        self.records[key] = (cid, p["record"])
         return SimpleNamespace(uri=f"at://{self.did}/{p['collection']}/{p['rkey']}", cid=cid)
 
     def delete_record(self, p):
         self.calls.append(("delete", p))
         self.records.pop((p["collection"], p["rkey"]), None)
+
+    def apply_writes(self, p):
+        from consentvid.records import compute_cid
+
+        self.calls.append(("apply_writes", p))
+        if self.fail_apply:
+            raise self.fail_apply
+        if "swapCommit" in p and p["swapCommit"] != self.head_cid():
+            raise RuntimeError("InvalidSwap: Commit was at another version")
+        staged, results = dict(self.records), []
+        for w in p["writes"]:
+            key = (w["collection"], w["rkey"])
+            if w["$type"].endswith("#create"):
+                if key in staged:
+                    raise RuntimeError("InvalidRequest: Record already exists")
+                cid = compute_cid(w["value"])
+                staged[key] = (cid, w["value"])
+                results.append(SimpleNamespace(uri=f"at://{self.did}/{key[0]}/{key[1]}", cid=cid))
+            elif w["$type"].endswith("#delete"):
+                if key not in staged:
+                    raise RuntimeError("InvalidRequest: Could not find record")
+                del staged[key]
+                results.append(SimpleNamespace())
+        self.records = staged
+        self.head += 1
+        return SimpleNamespace(commit=SimpleNamespace(cid=self.head_cid(), rev="3maaaaaaaaaz2"), results=results)
+
+    def head_cid(self):
+        return f"bafycommit{self.head}"
+
+    def get_latest_commit(self, p):
+        self.calls.append(("get_latest_commit", p))
+        return SimpleNamespace(cid=self.head_cid(), rev="3maaaaaaaaaz2")
 
     def get_record(self, p):
         try:
@@ -121,7 +182,7 @@ class FakeRepo:
 def fake_client():
     repo = FakeRepo()
     client = SimpleNamespace(me=SimpleNamespace(did=ALICE, handle="alice.test"))
-    client.com = SimpleNamespace(atproto=SimpleNamespace(repo=repo))
+    client.com = SimpleNamespace(atproto=SimpleNamespace(repo=repo, sync=repo))
     client.repo = repo
     return client
 

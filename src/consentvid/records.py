@@ -6,6 +6,7 @@ import hashlib
 import ipaddress
 import re
 import socket
+import threading
 import unicodedata
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -18,9 +19,21 @@ CONSENT_NSID = "org.consentvid.consent"
 # these strings end up in public records and manifests.
 # Always used with fullmatch: '$' also matches before a trailing newline.
 _DID_RE = re.compile(r"did:[a-z]+:[a-zA-Z0-9._:%-]*[a-zA-Z0-9._-]")
+# Domain-authority segments may not end in '-' (atproto.com/specs/nsid);
+# total length is capped separately (_NSID_MAX).
 _NSID_RE = re.compile(
-    r"[a-zA-Z]([a-zA-Z0-9-]{0,62})?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,62})?)+"
+    r"[a-zA-Z]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+"
     r"\.[a-zA-Z]([a-zA-Z0-9]{0,62})?"
+)
+_DID_MAX, _NSID_MAX, _HANDLE_MAX = 2048, 317, 253
+# Record keys of type 'tid' (atproto.com/specs/tid): 13 base32-sortable
+# characters, the first limited so the top bit of the 64-bit value is 0.
+TID_RE = re.compile(r"[234567abcdefghij][234567abcdefghijklmnopqrstuvwxyz]{12}")
+_TID_ALPHABET = "234567abcdefghijklmnopqrstuvwxyz"
+# Handles under these TLDs must never resolve (atproto.com/specs/handle).
+# '.test' is for development only and also refused here.
+DISALLOWED_HANDLE_TLDS = frozenset(
+    {"alt", "arpa", "example", "internal", "invalid", "local", "localhost", "onion", "test"}
 )
 _RKEY_RE = re.compile(r"[a-zA-Z0-9._:~-]{1,512}")
 _HANDLE_RE = re.compile(
@@ -204,11 +217,11 @@ def parse_at_uri(uri: str, collection: str | None = None) -> AtUri:
     if len(parts) != 3:
         raise ValueError(f"expected at://<did>/<collection>/<rkey>: {uri!r}")
     did, coll, rkey = parts
-    if not _DID_RE.fullmatch(did):
+    if not is_did(did):
         raise ValueError(f"AT-URI authority must be a DID: {uri!r}")
-    if not _NSID_RE.fullmatch(coll):
+    if not is_nsid(coll):
         raise ValueError(f"invalid collection NSID in {uri!r}")
-    if not _RKEY_RE.fullmatch(rkey) or rkey in (".", ".."):
+    if not is_record_key(rkey):
         raise ValueError(f"invalid record key in {uri!r}")
     if collection and coll != collection:
         raise ValueError(f"expected a {collection} record, got {coll}: {uri}")
@@ -216,11 +229,145 @@ def parse_at_uri(uri: str, collection: str | None = None) -> AtUri:
 
 
 def is_did(s: str) -> bool:
-    return isinstance(s, str) and bool(_DID_RE.fullmatch(s))
+    return isinstance(s, str) and len(s) <= _DID_MAX and bool(_DID_RE.fullmatch(s))
+
+
+def is_nsid(s: str) -> bool:
+    return isinstance(s, str) and len(s) <= _NSID_MAX and bool(_NSID_RE.fullmatch(s))
+
+
+def is_record_key(s) -> bool:
+    """Record key syntax (atproto.com/specs/record-key): 1-512 characters
+    from [A-Za-z0-9._:~-], and not '.' or '..'."""
+    return isinstance(s, str) and bool(_RKEY_RE.fullmatch(s)) and s not in (".", "..")
 
 
 def is_handle(s: str) -> bool:
-    return isinstance(s, str) and bool(_HANDLE_RE.fullmatch(s))
+    """Handle syntax (atproto.com/specs/handle). Syntax only: a handle under
+    a disallowed TLD is well-formed but must not resolve (handle_tld_error)."""
+    return isinstance(s, str) and len(s) <= _HANDLE_MAX and bool(_HANDLE_RE.fullmatch(s))
+
+
+def handle_tld_error(handle: str) -> str | None:
+    """Why ``handle`` must never resolve (its TLD is reserved), or None."""
+    tld = handle.lower().rstrip(".").rsplit(".", 1)[-1]
+    if tld in DISALLOWED_HANDLE_TLDS:
+        return f"handles under .{tld} are reserved and never resolve"
+    return None
+
+
+def is_tid(s) -> bool:
+    return isinstance(s, str) and bool(TID_RE.fullmatch(s))
+
+
+_tid_lock = threading.Lock()
+_last_tid = 0
+
+
+def _encode_tid(value: int) -> str:
+    out = []
+    for _ in range(13):
+        out.append(_TID_ALPHABET[value & 31])
+        value >>= 5
+    return "".join(reversed(out))
+
+
+def decode_tid(tid: str) -> int:
+    value = 0
+    for ch in tid:
+        value = (value << 5) | _TID_ALPHABET.index(ch)
+    return value
+
+
+def new_tid() -> str:
+    """A fresh record key of type 'tid': 53 bits of microseconds since the
+    UNIX epoch, then a random 10-bit clock id, top bit 0. Monotonic within
+    this process (atproto.com/specs/tid)."""
+    import secrets
+    import time
+
+    global _last_tid
+    value = ((time.time_ns() // 1000) & ((1 << 53) - 1)) << 10 | secrets.randbits(10)
+    with _tid_lock:
+        if value <= _last_tid:
+            value = _last_tid + 1
+        _last_tid = value
+    return _encode_tid(value)
+
+
+_DAG_CBOR_SHA256_PREFIX = b"\x01\x71\x12\x20"  # CIDv1, dag-cbor, sha2-256, 32 bytes
+
+
+def _uvarint(n: int) -> bytes:
+    out = bytearray()
+    while True:
+        b = n & 0x7F
+        n >>= 7
+        out.append(b | (0x80 if n else 0))
+        if not n:
+            return bytes(out)
+
+
+def _cid_link_bytes(cid: str) -> bytes:
+    """Binary form of a CIDv1 string (what DAG-CBOR tag 42 carries, minus the
+    0x00 multibase prefix that libipld adds)."""
+    import libipld
+
+    info = libipld.decode_cid(cid)
+    h = info["hash"]
+    if info["version"] != 1:
+        raise ValueError(f"compute_cid: only CIDv1 links are supported, got {cid!r}")
+    return _uvarint(1) + _uvarint(info["codec"]) + _uvarint(h["code"]) + _uvarint(len(h["digest"])) + h["digest"]
+
+
+def _to_ipld(value):
+    """atproto JSON -> the IPLD data model libipld encodes: {"$link": cid}
+    becomes a CID link, {"$bytes": base64} becomes bytes (atproto.com/specs/
+    data-model). libipld encodes any bytes that parse as a CID as a link, so
+    $bytes that happen to look like one can't be represented: ValueError."""
+    import base64
+
+    import libipld
+
+    if isinstance(value, dict):
+        if set(value) == {"$link"} and isinstance(value["$link"], str):
+            return _cid_link_bytes(value["$link"])
+        if set(value) == {"$bytes"} and isinstance(value["$bytes"], str):
+            raw = value["$bytes"]
+            data = base64.b64decode(raw + "=" * (-len(raw) % 4), validate=True)
+            if libipld.encode_dag_cbor(data)[:2] == b"\xd8\x2a":  # would be encoded as a CID link
+                raise ValueError("compute_cid: $bytes value is indistinguishable from a CID; not supported")
+            return data
+        return {k: _to_ipld(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_to_ipld(v) for v in value]
+    if isinstance(value, (bytes, bytearray)):
+        raise ValueError("compute_cid: raw bytes are ambiguous; pass atproto JSON ($bytes / $link)")
+    return value
+
+
+def compute_cid(record: dict) -> str:
+    """The CID a PDS assigns to ``record`` given in atproto JSON form: CIDv1,
+    dag-cbor, sha-256 of its canonical DAG-CBOR encoding, in base32. Blob
+    refs and other {"$link": ...} values are encoded as CID links and
+    {"$bytes": ...} as byte strings, as the PDS does."""
+    import libipld
+
+    digest = hashlib.sha256(libipld.encode_dag_cbor(_to_ipld(record))).digest()
+    return libipld.encode_cid(_DAG_CBOR_SHA256_PREFIX + digest)
+
+
+def raw_cid_from_sha256(content_hash: str) -> str:
+    """The CIDv1 (raw codec, sha-256) of bytes whose ``contentHash`` is
+    'sha256-<hex>' (or bare hex): the value a PDS blob ref would carry
+    (bafkrei...)."""
+    import libipld
+
+    hexdigest = content_hash.removeprefix("sha256-")
+    digest = bytes.fromhex(hexdigest)
+    if len(digest) != 32:
+        raise ValueError("expected a sha-256 digest (64 hex characters)")
+    return libipld.encode_cid(b"\x01\x55\x12\x20" + digest)
 
 
 def now_iso() -> str:
@@ -249,10 +396,12 @@ _RFC3339_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,20})?(Z|[+
 
 def parse_dt(s) -> datetime | None:
     """Parse an atproto datetime. Requires an explicit timezone (per spec);
-    returns None for anything else."""
+    returns None for anything else. Years 0001-9999 are accepted (format_dt
+    zero-pads them, so stored timestamps stay fixed width). Year 0000 is
+    valid per the spec but refused: Python's datetime can't represent it."""
     if not isinstance(s, str) or not _RFC3339_RE.fullmatch(s) or s.endswith("-00:00"):
         return None
-    if int(s[:4]) < 1000:
+    if int(s[:4]) < 1:
         return None
     s = s.replace("Z", "+00:00")
     # Python 3.10's fromisoformat only takes 3- or 6-digit fractions; pad/trim.
@@ -329,7 +478,9 @@ _MIME_BY_SUFFIX = {
 # The only values a video record's mimeType may take. It is copied into
 # manifests as encodingFormat, which Croissant loaders act on (e.g.
 # 'git+https' makes mlcroissant git-clone the URL and skip the hash check).
-VIDEO_MIME_TYPES = frozenset(_MIME_BY_SUFFIX.values())
+# Readers also accept the registered names a PDS's file-type sniffing reports
+# (video/matroska, video/vnd.avi); writers (mime_for) keep the x- spellings.
+VIDEO_MIME_TYPES = frozenset(_MIME_BY_SUFFIX.values()) | {"video/matroska", "video/vnd.avi"}
 
 
 def mime_for(path_or_name) -> str | None:
