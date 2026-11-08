@@ -72,7 +72,8 @@
               "#peertubeRef",
               "#urlRef",
               "#localRef",
-              "#bskyPostRef"
+              "#bskyPostRef",
+              "#pdsBlobRef"
             ],
             "type": "union",
             "description": "Where the bytes live. Readers that don't know a storage type treat the bytes as unreachable."
@@ -177,6 +178,23 @@
         }
       },
       "description": "Bytes kept by the contributor, not published. Never dereferenced."
+    },
+    "pdsBlobRef": {
+      "type": "object",
+      "required": [
+        "blob"
+      ],
+      "properties": {
+        "blob": {
+          "type": "blob",
+          "accept": [
+            "video/*"
+          ],
+          "maxSize": 300000000,
+          "description": "The video bytes. Its ref is their raw-codec sha-256 CID, equal to contentHash. maxSize is Bluesky's video limit (300 MB); a PDS may accept less (the reference PDS defaults to 5 MiB, its installer sets 300 MiB), and the PDS does not enforce accept or maxSize for lexicons it doesn't know, so readers do."
+        }
+      },
+      "description": "The bytes are a blob in the contributor's own PDS, uploaded with com.atproto.repo.uploadBlob and referenced by this record only (no post). The PDS keeps a blob while any record in the repo references it and deletes it once none does, so withdrawing (deleting this record) frees the bytes; they are also unavailable while the account is deactivated and deleted with it. Served by the contributor's PDS through com.atproto.sync.getBlob. Readers require blob.ref to equal contentHash, blob.size to equal size when size is given, and blob.mimeType to name the same container as mimeType (the PDS stores the type its own sniffing reports, e.g. video/matroska for video/x-matroska)."
     },
     "bskyPostRef": {
       "type": "object",
