@@ -71,7 +71,8 @@
               "#ipfsRef",
               "#peertubeRef",
               "#urlRef",
-              "#localRef"
+              "#localRef",
+              "#bskyPostRef"
             ],
             "type": "union",
             "description": "Where the bytes live. Readers that don't know a storage type treat the bytes as unreachable."
@@ -176,6 +177,26 @@
         }
       },
       "description": "Bytes kept by the contributor, not published. Never dereferenced."
+    },
+    "bskyPostRef": {
+      "type": "object",
+      "required": [
+        "post",
+        "blob"
+      ],
+      "properties": {
+        "blob": {
+          "type": "string",
+          "format": "cid",
+          "description": "CID of the video blob as the post's embed carries it (raw codec, sha-256): equal to contentHash."
+        },
+        "post": {
+          "ref": "com.atproto.repo.strongRef",
+          "type": "ref",
+          "description": "The app.bsky.feed.post (DID-form at:// URI and CID) that embeds the video."
+        }
+      },
+      "description": "The video of one of the contributor's own Bluesky posts: the bytes are the video blob that post embeds (app.bsky.embed.video, directly or as the media of app.bsky.embed.recordWithMedia), served by the contributor's PDS through com.atproto.sync.getBlob. Deliberately not a blob reference: the bytes stay tied to the post, so deleting the post deletes them and readers then treat the clip as unavailable. Readers require post.uri to be an app.bsky.feed.post in the same repo as this record, blob to equal contentHash, and the post (at post.cid) to embed exactly that blob."
     },
     "peertubeRef": {
       "type": "object",
