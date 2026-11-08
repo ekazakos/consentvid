@@ -13,6 +13,6 @@
     "setup-profile": "node scripts/setup.mjs"
   },
   "devDependencies": {
-    "wrangler": "4.149.0"
+    "wrangler": "4.157.0"
   }
 }
