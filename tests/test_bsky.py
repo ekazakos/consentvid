@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from conftest import ALICE, BOB, K1, consent_v2_record, video_v2_record
-from consentvid import bsky, cli, versions
+from consentvid import _core, bsky, versions
 from consentvid import resync as rs
 from consentvid.croissant import Clip, _file_object, build_manifest
 from consentvid.errors import ConsentVidError, RepoUnavailable, VerificationError
@@ -346,7 +346,7 @@ def _setup_cli(fake_client, monkeypatch, post=POST, probe=None, post_did=ALICE):
     from consentvid.media import Probe
     from test_cli import run
 
-    monkeypatch.setattr(cli, "get_client", lambda: fake_client)
+    monkeypatch.setattr(_core, "get_client", lambda: fake_client)
 
     def fetch(at):
         assert str(at) == f"at://{post_did}/app.bsky.feed.post/{POST_RKEY}"

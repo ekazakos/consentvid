@@ -35,3 +35,34 @@ class RepoUnavailable(ConsentVidError):
         # old PDS answers like this, so a reader re-resolves (R3-04).
         self.pds = pds
         super().__init__(message or f"repo {did} unavailable ({status})")
+
+
+class UsageError(ConsentVidError, ValueError):
+    """A bad argument (an option value, a URI, a missing term). ``param_hint``
+    names the CLI option it corresponds to, when there is one; the CLI turns
+    it into a usage error (exit status 2)."""
+
+    def __init__(self, message: str, *, param_hint: str | None = None):
+        self.param_hint = param_hint
+        super().__init__(message)
+
+
+class RateLimited(ConsentVidError):
+    """The PDS refused a write for now (HTTP 429). ``reset``: epoch seconds
+    after which a retry may succeed, if the PDS said."""
+
+    def __init__(self, message: str, *, reset: float | None = None):
+        self.reset = reset
+        super().__init__(message)
+
+
+class AlreadyRegistered(ConsentVidError):
+    """These bytes are already registered as one of your videos (``uri``)."""
+
+    def __init__(self, message: str, *, uri: str):
+        self.uri = uri
+        super().__init__(message)
+
+
+class Cancelled(ConsentVidError):
+    """A confirmation callback declined the action; nothing was changed."""

@@ -832,7 +832,9 @@ def test_https_5xx_and_transport_errors_raise_but_4xx_is_an_answer(monkeypatch):
 
 
 def test_embed_warns_when_the_handle_lookup_failed(capsys):
-    from consentvid import cli
+    from consentvid import _core, cli
+
+    _core.set_reporter(cli._click_reporter)  # as when the CLI runs
 
     def failing(did):
         raise identity.HandleLookupError("DNS lookup of _atproto.alice.example.com failed (Timeout)")

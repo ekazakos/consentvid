@@ -218,6 +218,35 @@ they are there as written, the write counts as done (and the uploaded bytes
 stay); if it can't tell, it says so and keeps the bytes (`consentvid list`
 shows what exists).
 
+### Python API (many videos, scripts, notebooks)
+
+Everything above is also a Python API; the CLI is a thin layer over it, so
+the same checks apply (local validation, the bot-label and AI-preference
+gates, metadata stripping, one atomic commit per video and consent). Nothing
+prompts, and the consent terms and attestations have no defaults.
+
+```python
+from consentvid import Session, Terms
+
+s = Session.login()  # the cached `consentvid login` session, or CONSENTVID_HANDLE / _APP_PASSWORD
+terms = Terms(purposes=["training"], modalities=["video", "audio"], model_classes=["academic"],
+              people="onlyMe", adult=True, authorship=True, expires="2y")
+
+clip = s.contribute("clip.mp4", terms, title="Making pasta", tags=["cooking"], storage="r2")
+s.contribute_from_post("https://bsky.app/profile/you.bsky.social/post/3abc...", terms)
+s.list()                # your videos with their consent status
+s.check(clip.video_uri) # the verdict `resync` would give
+s.revoke(clip.video_uri, delete_bytes=True)
+
+# Many videos: sequential, paced under your PDS's write budget, rate limits
+# waited out, and resumable: re-run the same call after an interruption.
+results = s.contribute_many(paths, terms=terms, title_for=lambda item: titles[item.path],
+                            storage="r2", resume="run.jsonl")
+```
+
+See [docs/python-api.md](docs/python-api.md) for the reference and a bulk
+example.
+
 ## Researchers
 
 No account needed.

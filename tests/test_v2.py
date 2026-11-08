@@ -22,8 +22,8 @@ from conftest import (
     video_v2_cid,
     video_v2_record,
 )
+from consentvid import _core, cli, signals, versions
 from consentvid import appview as av
-from consentvid import cli, signals, versions
 from consentvid import resync as rs
 from consentvid.records import CONSENT_V2_NSID, VIDEO_V2_NSID, compute_cid, raw_cid_from_sha256
 from consentvid.validate import validate_in_repo, validate_record, write_policy_errors
@@ -330,7 +330,7 @@ def test_backfill_reads_both_versions_and_records_signals(monkeypatch):
     monkeypatch.setattr(identity, "resolve_did", lambda r: ALICE)
     monkeypatch.setattr(identity, "public_client", lambda did: None)
     monkeypatch.setattr(cli, "_repo_statuses", lambda did, relay: [(True, None), (True, None)])
-    monkeypatch.setattr(cli, "_list_all", lambda client, did, coll: listing.get(coll, []))
+    monkeypatch.setattr(_core, "_list_all", lambda client, did, coll: listing.get(coll, []))
     monkeypatch.setattr(signals, "_lookup", lambda did: signals.AccountSignals(training_denied=True, detail="x"))
     monkeypatch.setattr(av, "REQUIRE_SIGNAL_CHECK", True)
     r = CliRunner().invoke(cli.main, ["appview", "backfill", "alice.test"])
@@ -352,7 +352,7 @@ def test_backfill_fails_closed_when_signals_cant_be_read(monkeypatch):
     monkeypatch.setattr(identity, "resolve_did", lambda r: ALICE)
     monkeypatch.setattr(identity, "public_client", lambda did: None)
     monkeypatch.setattr(cli, "_repo_statuses", lambda did, relay: [(True, None), (True, None)])
-    monkeypatch.setattr(cli, "_list_all", lambda client, did, coll: [])
+    monkeypatch.setattr(_core, "_list_all", lambda client, did, coll: [])
 
     def boom(did):
         raise ConnectionError("PDS down")
@@ -573,7 +573,7 @@ def test_contribute_writes_self_labels(fake_client, tmp_path, monkeypatch):
 
     _fake_media(monkeypatch)
     monkeypatch.setattr("consentvid.storage.upload", _upload())
-    monkeypatch.setattr(cli, "get_client", lambda: fake_client)
+    monkeypatch.setattr(_core, "get_client", lambda: fake_client)
     f = tmp_path / "clip.mp4"
     f.write_bytes(b"bytes")
     r = run("register-video", str(f), "--title", "t", "--storage-kind", "r2", "--self-label", "nudity")
@@ -588,7 +588,7 @@ def test_revoke_a_v2_video_deletes_its_v2_consent(fake_client, monkeypatch):
     fake_client.repo.records[(V2, K1)] = (video_v2_cid(), video_v2_record())
     fake_client.repo.records[(C2, K1)] = ("bafyc", consent_v2_record())
     fake_client.repo.records[(C1, K1)] = ("bafyv1", consent_record())  # another version: untouched
-    monkeypatch.setattr(cli, "get_client", lambda: fake_client)
+    monkeypatch.setattr(_core, "get_client", lambda: fake_client)
     r = run("revoke", f"at://{ALICE}/{V2}/{K1}", "-y")
     assert r.exit_code == 0, r.output
     assert set(fake_client.repo.records) == {(C1, K1)}

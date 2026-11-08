@@ -4,6 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from consentvid import _core
+
 FIXTURES = Path(__file__).parent / "fixtures"
 ALICE = "did:plc:aliceaaaaaaaaaaaaaaaaaaa"
 BOB = "did:plc:bobbbbbbbbbbbbbbbbbbbbbb"
@@ -25,7 +27,6 @@ def _isolated_home(tmp_path, monkeypatch):
         "CONSENTVID_VALIDATE",
     ):
         monkeypatch.delenv(var, raising=False)
-    import consentvid.cli as cli
     import consentvid.identity as identity
     import consentvid.resync as resync
 
@@ -57,10 +58,15 @@ def _isolated_home(tmp_path, monkeypatch):
     # gate turn it back on.
     monkeypatch.setattr(appview, "REQUIRE_SIGNAL_CHECK", False)
 
-    monkeypatch.setattr(cli, "_revoke_sleep", lambda s: None)
-    monkeypatch.setattr(cli, "CONFIG_DIR", tmp_path / "home")
-    monkeypatch.setattr(cli, "SESSION_PATH", tmp_path / "home" / "session.txt")
-    monkeypatch.setattr(cli, "_load_env", lambda: None)
+    monkeypatch.setattr(_core, "_revoke_sleep", lambda s: None)
+    monkeypatch.setattr(_core, "CONFIG_DIR", tmp_path / "home")
+    monkeypatch.setattr(_core, "SESSION_PATH", tmp_path / "home" / "session.txt")
+    monkeypatch.setattr(_core, "_load_env", lambda: None)
+    # The CLI installs its printing reporter when it runs; start every test
+    # from the library default (the logger).
+    token = _core.set_reporter(None)
+    yield
+    _core.reset_reporter(token)
 
 
 @pytest.fixture

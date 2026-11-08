@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from consentvid import cli, media
+from consentvid import _core, cli, media
 from consentvid.errors import ConsentVidError
 
 pytestmark = pytest.mark.skipif(not (shutil.which("ffmpeg") and shutil.which("ffprobe")), reason="needs ffmpeg")
@@ -48,7 +48,7 @@ def test_comment_and_title_count_as_metadata_and_are_stripped_on_upload(tmp_path
     ffmpeg("-f", "lavfi", "-i", "testsrc=d=1:s=64x48", "-metadata", "comment=50.07,14.43", "-metadata", "title=home", f)
     p = media.probe(f)
     assert p.needs_sanitising and not p.sensitive_tags
-    out, _, h = cli._prepare_bytes(f, "r2", False, tmp_path / "work", False)
+    out, _, h = _core._prepare_bytes(f, "r2", False, tmp_path / "work", False)
     tags = ffprobe_streams(out)["format"].get("tags", {})
     assert "comment" not in tags and "title" not in tags
     assert h == cli.hash_file(out)
@@ -107,13 +107,13 @@ def test_sanitise_never_follows_or_replaces_an_existing_output(tmp_path, monkeyp
     victim.write_text("precious")
     (tmp_path / "clip.clean.mp4").symlink_to(victim)
     with pytest.raises(ConsentVidError, match="already exists"):
-        cli._prepare_bytes(src, "local", False, tmp_path / "work", False)
+        _core._prepare_bytes(src, "local", False, tmp_path / "work", False)
     assert victim.read_text() == "precious"
     # dangling symlink: also refused, target never created
     (tmp_path / "clip.clean.mp4").unlink()
     (tmp_path / "clip.clean.mp4").symlink_to(tmp_path / "created-by-attacker.mp4")
     with pytest.raises(ConsentVidError, match="already exists"):
-        cli._prepare_bytes(src, "local", False, tmp_path / "work", False)
+        _core._prepare_bytes(src, "local", False, tmp_path / "work", False)
     assert not (tmp_path / "created-by-attacker.mp4").exists()
 
 
@@ -121,7 +121,7 @@ def test_clean_copy_hash_is_of_the_bytes_ffmpeg_wrote(tmp_path, monkeypatch):
     monkeypatch.setenv("CONSENTVID_HOME", str(tmp_path / "home"))
     src = tmp_path / "clip.mp4"
     ffmpeg("-f", "lavfi", "-i", "testsrc=d=1:s=64x48", "-metadata", "title=home", src)
-    out, probe, h = cli._prepare_bytes(src, "local", False, tmp_path / "work", False)
+    out, probe, h = _core._prepare_bytes(src, "local", False, tmp_path / "work", False)
     assert out == tmp_path / "clip.clean.mp4" and h == cli.hash_file(out) == probe.content_hash
 
 
@@ -213,11 +213,11 @@ def test_pointer_kind_strips_what_ffprobe_cannot_see(case, request, fake_client,
         validate=None, storage_value="https://example.org/clip.mp4",
     )
     with pytest.raises(ConsentVidError, match="clean copy was written"):
-        cli._register(fake_client, src, storage_kind="url", **opts)
+        _core._register(fake_client, src, storage_kind="url", **opts)
     clean = src.with_name(f"{src.stem}.clean{src.suffix}")
     assert clean.exists() and marker not in clean.read_bytes()
     assert not fake_client.repo.records
-    _, _, rec = cli._register(fake_client, clean, storage_kind="url", **opts)  # accepted as is
+    _, _, rec = _core._register(fake_client, clean, storage_kind="url", **opts)  # accepted as is
     assert rec["contentHash"] == cli.hash_file(clean)
 
 
@@ -228,7 +228,7 @@ def test_local_kind_commits_to_a_clean_copy(case, request, fake_client, tmp_path
         title="t", description="", language="", tags=(), keep_metadata=False, allow_duplicate=False,
         validate=None, storage_value=None,
     )
-    _, _, rec = cli._register(fake_client, src, storage_kind="local", **opts)
+    _, _, rec = _core._register(fake_client, src, storage_kind="local", **opts)
     # R3-15: the published name is content-derived; the clean copy sits next to the source
     assert rec["storageRef"]["value"] == rec["contentHash"] + src.suffix.lower()
     committed = src.with_name(f"{src.stem}.clean{src.suffix}")
@@ -289,7 +289,7 @@ def test_hevc_sei_in_decoder_configuration_is_removed(tmp_path, ext):
     dec = subprocess.run(["ffmpeg", "-v", "error", "-i", f"file:{out}", "-f", "null", "-"], capture_output=True, text=True)
     assert dec.returncode == 0 and not dec.stderr.strip()
     # ... and the register path reaches a fixed point (Matroska needs a pass more).
-    fixed, _, h = cli._sanitise_to_fixed_point(src, tmp_path / "work")
+    fixed, _, h = _core._sanitise_to_fixed_point(src, tmp_path / "work")
     assert b"x265 (build" not in fixed.read_bytes() and h == cli.hash_file(fixed)
 
 
@@ -373,7 +373,7 @@ def test_aac_with_program_config_element_is_refused(tmp_path):
 
 def test_stereo_aac_still_sanitises_and_converges(tmp_path):
     src = _with_audio(tmp_path, "st.mp4", "stereo")
-    clean, _probe, h = cli._sanitise_to_fixed_point(src, tmp_path)
+    clean, _probe, h = _core._sanitise_to_fixed_point(src, tmp_path)
     assert h == cli.hash_file(clean)
 
 

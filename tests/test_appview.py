@@ -4,6 +4,7 @@ import sqlite3
 import pytest
 
 from conftest import ALICE, BOB, K0, K1, K2, K3, VIDEO_CID, consent_record, video_record
+from consentvid import _core
 from consentvid import appview as av
 from consentvid import cli as _cli
 from consentvid.records import RECORD_NSIDS
@@ -256,7 +257,7 @@ def test_backfill_ignores_foreign_uris(tmp_path, monkeypatch):
     }
     monkeypatch.setattr(identity, "resolve_did", lambda r: mallory)
     monkeypatch.setattr(identity, "public_client", lambda did: None)
-    monkeypatch.setattr(cli, "_list_all", lambda client, did, coll: listing.get(coll, []))
+    monkeypatch.setattr(_core, "_list_all", lambda client, did, coll: listing.get(coll, []))
     result = CliRunner().invoke(cli.main, ["appview", "backfill", "mallory.test"])
     assert result.exit_code == 0, result.output
     assert "0 record(s) indexed, 2 skipped" in result.output
@@ -278,7 +279,7 @@ def test_backfill_continues_after_a_failing_repo(monkeypatch):
 
     monkeypatch.setattr(identity, "resolve_did", resolve)
     monkeypatch.setattr(identity, "public_client", lambda did: None)
-    monkeypatch.setattr(cli, "_list_all", lambda client, did, coll: [])
+    monkeypatch.setattr(_core, "_list_all", lambda client, did, coll: [])
     result = CliRunner().invoke(cli.main, ["appview", "backfill", "bad.test", "alice.test"])
     assert result.exit_code == 0 and "alice.test: 0 record(s) indexed" in result.output
 
@@ -421,7 +422,7 @@ def test_backfill_never_holds_the_write_lock_during_network_reads(monkeypatch):
 
     monkeypatch.setattr(identity, "resolve_did", lambda r: ALICE)
     monkeypatch.setattr(identity, "public_client", lambda did: None)
-    monkeypatch.setattr(cli, "_list_all", list_all)
+    monkeypatch.setattr(_core, "_list_all", list_all)
     r = CliRunner().invoke(cli.main, ["appview", "backfill", "alice.test"])
     assert r.exit_code == 0 and "2 record(s) indexed" in r.output, r.output
     assert fetches == list(RECORD_NSIDS)
@@ -473,7 +474,7 @@ def test_backfill_of_invalid_rewrite_leaves_nothing_usable(monkeypatch):
     }
     monkeypatch.setattr(identity, "resolve_did", lambda r: ALICE)
     monkeypatch.setattr(identity, "public_client", lambda did: None)
-    monkeypatch.setattr(cli, "_list_all", lambda client, did, coll: listing.get(coll, []))
+    monkeypatch.setattr(_core, "_list_all", lambda client, did, coll: listing.get(coll, []))
     r = CliRunner().invoke(cli.main, ["appview", "backfill", "alice.test"])
     assert r.exit_code == 0, r.output
     conn = av.connect()
@@ -499,7 +500,7 @@ def test_backfill_of_invalid_video_rewrite_removes_it(monkeypatch):
     }
     monkeypatch.setattr(identity, "resolve_did", lambda r: ALICE)
     monkeypatch.setattr(identity, "public_client", lambda did: None)
-    monkeypatch.setattr(cli, "_list_all", lambda client, did, coll: listing.get(coll, []))
+    monkeypatch.setattr(_core, "_list_all", lambda client, did, coll: listing.get(coll, []))
     r = CliRunner().invoke(cli.main, ["appview", "backfill", "alice.test"])
     assert r.exit_code == 0, r.output
     conn = av.connect()
@@ -517,7 +518,7 @@ def _backfill(monkeypatch, list_all):
 
     monkeypatch.setattr(identity, "resolve_did", lambda r: ALICE)
     monkeypatch.setattr(identity, "public_client", lambda did: None)
-    monkeypatch.setattr(cli, "_list_all", list_all)
+    monkeypatch.setattr(_core, "_list_all", list_all)
     r = CliRunner().invoke(cli.main, ["appview", "backfill", "alice.test"])
     assert r.exit_code == 0, r.output
     return r
@@ -1293,7 +1294,7 @@ def test_backfill_of_a_deactivated_repo_records_it_and_clears_the_gap(monkeypatc
         raise _could_not_find_repo()  # what eurosky.social answers for a deactivated repo
 
     monkeypatch.setattr(cli, "_repo_statuses", lambda did, relay: [(False, "deactivated"), (False, "deactivated")])
-    monkeypatch.setattr(cli, "_list_all", list_all)
+    monkeypatch.setattr(_core, "_list_all", list_all)
     r = _backfill_all(monkeypatch)
     assert r.exit_code == 0, r.output
     assert listed == []  # never listed
@@ -1322,7 +1323,7 @@ def test_backfill_of_a_tombstoned_did_purges_it(monkeypatch):
 
     monkeypatch.setattr(cli, "_repo_statuses", _REAL_REPO_STATUSES)
     monkeypatch.setattr(av, "relay_repo_status", relay_status)
-    monkeypatch.setattr(cli, "_list_all", lambda *a: pytest.fail("listed a deleted repo"))
+    monkeypatch.setattr(_core, "_list_all", lambda *a: pytest.fail("listed a deleted repo"))
     r = _backfill_all_with(monkeypatch, tombstoned)
     assert r.exit_code == 0, r.output
     assert "0 failed" in r.output
@@ -1353,7 +1354,7 @@ def test_undecided_status_and_a_listing_failure_is_still_a_failure(monkeypatch):
         raise _could_not_find_repo()
 
     monkeypatch.setattr(cli, "_repo_statuses", lambda did, relay: [None, None])
-    monkeypatch.setattr(cli, "_list_all", list_all)
+    monkeypatch.setattr(_core, "_list_all", list_all)
     r = _backfill_all(monkeypatch)
     assert "1 failed" in r.output
     assert av.get_gap(av.connect()) == "1000000"
@@ -1464,7 +1465,7 @@ def _lagging_backfill(monkeypatch, relay_answer, listing=None):
         return listing.get(coll, [])
 
     monkeypatch.setattr(cli, "_repo_statuses", lambda did, relay: [(True, None), relay_answer])
-    monkeypatch.setattr(cli, "_list_all", list_all)
+    monkeypatch.setattr(_core, "_list_all", list_all)
     return listed
 
 
@@ -1587,7 +1588,7 @@ def test_account_takedown_still_deactivates(tmp_path):
 def _stub_listing(monkeypatch, listing=None):
     from types import SimpleNamespace
 
-    from consentvid import cli, identity
+    from consentvid import identity
 
     listing = listing or {
         V: [SimpleNamespace(uri=f"at://{ALICE}/{V}/{K1}", cid=VIDEO_CID, value=video_record())],
@@ -1595,7 +1596,7 @@ def _stub_listing(monkeypatch, listing=None):
     }
     monkeypatch.setattr(identity, "resolve_did", lambda r: r)
     monkeypatch.setattr(identity, "public_client", lambda did: None)
-    monkeypatch.setattr(cli, "_list_all", lambda client, did, coll: listing.get(coll, []))
+    monkeypatch.setattr(_core, "_list_all", lambda client, did, coll: listing.get(coll, []))
 
 
 def test_sync_then_one_drain_tick_unhides_without_a_cli_call(monkeypatch):
