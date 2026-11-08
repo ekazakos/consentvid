@@ -117,10 +117,19 @@ def public_url(storage_ref: dict) -> str | None:
     if not isinstance(storage_ref, dict):
         return None
     kind, value = storage_ref.get("kind"), storage_ref.get("value")
-    if kind not in ("url", "r2", "peertube", "ipfs") or not isinstance(value, str) or not value:
+    if kind not in ("url", "r2", "peertube", "ipfs", "bsky") or not isinstance(value, str) or not value:
         return None
     if storage_ref_errors(storage_ref):
         return None
+    if kind == "bsky":
+        # The contributor's PDS serves the post's video blob (DID resolution:
+        # network; None if it fails).
+        from consentvid import bsky
+
+        try:
+            return bsky.url_for_ref(storage_ref)
+        except Exception:  # noqa: BLE001
+            return None
     if kind == "ipfs":
         gateway = require_https(
             "CONSENTVID_IPFS_GATEWAY", os.environ.get("CONSENTVID_IPFS_GATEWAY") or "https://ipfs.io"
@@ -156,6 +165,9 @@ def delete_bytes(storage_ref: dict, content_hash: str) -> str:
         return _delete_peertube(value, content_hash)
     if kind == "url":
         return f"bytes at {value} are self-hosted: delete them yourself"
+    if kind == "bsky":
+        post = (storage_ref.get("post") or {}).get("uri")
+        return f"the bytes are your Bluesky post's video: delete the post ({post}) on Bluesky to remove them"
     return "nothing to delete (local)"
 
 

@@ -1,0 +1,20 @@
+{
+  "name": "consentvid-app",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "The ConsentVid consent web app (served at https://consentvid.org/app/)",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test \"test/*.test.js\"",
+    "vectors": "node scripts/vectors.mjs"
+  },
+  "dependencies": {
+    "@atproto/oauth-client-browser": "0.5.14",
+    "@ipld/dag-cbor": "10.0.2",
+    "multiformats": "14.0.5"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}

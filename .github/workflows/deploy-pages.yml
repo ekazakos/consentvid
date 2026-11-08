@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - 'web/**'
+      - 'app/**'
+      - 'src/consentvid/schemas/**'
       - '.github/workflows/deploy-pages.yml'
   workflow_dispatch:
 
@@ -31,6 +33,19 @@ jobs:
           persist-credentials: false
       - name: Refuse to publish a sample manifest that leaks local paths
         run: python3 .github/check_dataset.py web/dataset.json
+      # The consent web app (web/app/): bundled from app/ with the exact
+      # dependency versions in app/package-lock.json. --ignore-scripts: no
+      # dependency install scripts run in the deploy job.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Build the consent web app
+        working-directory: app
+        run: |
+          npm ci --ignore-scripts
+          npm test
+          npm run build
+          test -s ../web/app/app.js
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:

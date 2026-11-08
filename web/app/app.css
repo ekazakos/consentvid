@@ -1,0 +1,51 @@
+/* The consent app (consentvid.org/app/): builds on ../styles.css tokens. */
+.app{max-width:820px;padding-top:40px;padding-bottom:60px}
+.app h1{font-family:var(--serif);font-weight:500;font-size:44px;line-height:1.1;letter-spacing:-.02em;margin:0 0 14px}
+@media(max-width:600px){.app h1{font-size:34px}}
+.app .lede{color:var(--muted);font-size:17px;margin:0 0 26px;max-width:62ch}
+.app h2{font-family:var(--serif);font-weight:500;font-size:24px;margin:0 0 8px}
+.card{background:var(--elev);border:1px solid var(--rule);border-radius:var(--r);box-shadow:var(--sh);padding:22px 24px;margin:0 0 20px}
+@media(max-width:600px){.card{padding:18px 16px}}
+.muted{color:var(--muted)}
+.small{font-size:14px}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.grow{flex:1 1 220px}
+input[type=text],select{width:100%;font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--rule);border-radius:10px;padding:10px 12px}
+input[type=text]:focus,select:focus{outline:2px solid var(--violet);outline-offset:1px}
+button.btn{border:0;cursor:pointer}
+button.btn.ghost{border:1px solid var(--rule)}
+button.btn:disabled{opacity:.45;cursor:not-allowed;transform:none!important;box-shadow:none}
+.btn.small{padding:7px 13px;font-size:12px}
+.btn.danger{color:#b4235a;background:var(--elev);border:1px solid #f1c4d6}
+.who{font-size:12px;color:var(--muted);max-width:30ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.notice{border-radius:12px;padding:12px 16px;margin:0 0 18px;background:var(--chip);border:1px solid var(--rule)}
+.notice.error{background:#fff1f5;border-color:#f1c4d6;color:#8a1538}
+fieldset{border:0;padding:0;margin:0 0 18px}
+legend{font-weight:600;margin:0 0 8px;padding:0}
+fieldset label{display:block;margin:0 0 12px;font-size:15px}
+fieldset select,fieldset input[type=text]{margin-top:4px}
+.choices{display:flex;flex-wrap:wrap;gap:8px}
+.choices label{display:inline-flex;align-items:center;gap:7px;margin:0;padding:7px 12px;border:1px solid var(--rule);border-radius:999px;background:var(--bg);cursor:pointer;font-size:14px}
+.choices label:has(input:checked){border-color:var(--violet);background:var(--chip);color:var(--violet)}
+.choices input{accent-color:var(--violet)}
+.choices .hint{display:block;width:100%;font-size:13px;color:var(--faint);margin-top:-2px}
+.labels>span{display:block;font-size:14px;color:var(--muted);margin:0 0 6px}
+.check{display:flex!important;gap:10px;align-items:flex-start}
+.check input{margin-top:5px;accent-color:var(--violet);flex:none}
+.posts{list-style:none;margin:12px 0;padding:0;display:grid;gap:10px}
+.post{display:grid;grid-template-columns:auto 96px 1fr;gap:12px;align-items:center;padding:10px;border:1px solid var(--rule);border-radius:12px;background:var(--bg)}
+.post.selected{border-color:var(--violet);background:var(--chip)}
+.post img,.post .thumb{width:96px;height:64px;object-fit:cover;border-radius:8px;background:var(--rule)}
+.post .meta{min-width:0}
+.post .text{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.post .date{font-size:12px;color:var(--faint);font-family:var(--mono)}
+.post .state{font-size:12px;font-family:var(--mono);color:var(--cyan)}
+.post input[type=checkbox]{width:20px;height:20px;accent-color:var(--violet)}
+@media(max-width:520px){.post{grid-template-columns:auto 72px 1fr}.post img,.post .thumb{width:72px;height:48px}}
+.summary #summary p{margin:0 0 8px}
+.errors{color:#8a1538;margin:10px 0;padding-left:20px}
+.log{margin:14px 0 0;padding-left:20px;font-size:14px}
+.log .ok{color:#0f766e}
+.log .bad{color:#8a1538}
+.foot{margin-top:28px}

@@ -75,13 +75,25 @@ def _union_name(value: dict, nsid: str) -> str | None:
     return t[len(prefix) :] if t.startswith(prefix) else None
 
 
+BSKY_KIND = "bsky"  # internal kind of #bskyPostRef (consentvid.bsky)
+
+
 def storage_ref_of(storage, nsid: str = VIDEO_V2_NSID) -> dict:
     """A V2 storage union value as a V1 storageRef. A storage type we don't
     know becomes {'kind': <its $type>, 'value': ''}: opaque, never
-    dereferenced, so its bytes are unreachable for us."""
+    dereferenced, so its bytes are unreachable for us. ``#bskyPostRef``
+    becomes {'kind': 'bsky', 'value': <blob cid>, 'post': {'uri', 'cid'}}."""
     if not isinstance(storage, dict):
         return {}
     name = _union_name(storage, nsid)
+    if name == "bskyPostRef":
+        post = storage.get("post") if isinstance(storage.get("post"), dict) else {}
+        blob = storage.get("blob")
+        return {
+            "kind": BSKY_KIND,
+            "value": blob if isinstance(blob, str) else "",
+            "post": {"uri": post.get("uri"), "cid": post.get("cid")},
+        }
     if name in _STORAGE_V2:
         kind, field = _STORAGE_V2[name]
         value = storage.get(field)
@@ -122,6 +134,11 @@ def video_view(nsid: str, record: dict) -> dict:
     if nsid == VIDEO_NSID:
         view = dict(record)
         view.setdefault("labels", [])
+        ref = view.get("storageRef")
+        if isinstance(ref, dict) and ref.get("kind") == BSKY_KIND:
+            # Bluesky-post storage exists only in V2 (#bskyPostRef): a V1
+            # record claiming it is opaque, never dereferenced.
+            view["storageRef"] = {"kind": "v1:bsky", "value": ""}
         return view
     view = {k: record[k] for k in _VIDEO_COMMON if k in record}
     view["contentHash"] = content_hash_of_cid(record.get("contentHash", "")) or ""
@@ -165,12 +182,21 @@ def view(nsid: str, record: dict) -> dict:
 def video_record_v2(v: dict) -> dict:
     """The org.consentvid.videoV2 record for the internal view ``v``."""
     ref = v.get("storageRef") or {}
-    name, field = _STORAGE_KIND_TO_V2[ref.get("kind")]
+    if ref.get("kind") == BSKY_KIND:
+        post = ref.get("post") or {}
+        storage = {
+            "$type": f"{VIDEO_V2_NSID}#bskyPostRef",
+            "post": {"uri": post.get("uri"), "cid": post.get("cid")},
+            "blob": ref.get("value", ""),
+        }
+    else:
+        name, field = _STORAGE_KIND_TO_V2[ref.get("kind")]
+        storage = {"$type": f"{VIDEO_V2_NSID}#{name}", field: ref.get("value", "")}
     rec = {
         "$type": VIDEO_V2_NSID,
         "title": v["title"],
         "contentHash": raw_cid_from_sha256(v["contentHash"]),
-        "storage": {"$type": f"{VIDEO_V2_NSID}#{name}", field: ref.get("value", "")},
+        "storage": storage,
         "createdAt": v["createdAt"],
     }
     for k in ("description", "mimeType", "durationMs", "width", "height", "size"):

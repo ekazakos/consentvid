@@ -32,6 +32,7 @@ from consentvid.records import (
     CONSENT_V2_NSID,
     RECORD_NSIDS,
     VIDEO_FOR_CONSENT,
+    VIDEO_MIME_TYPES,
     VIDEO_NSID,
     VIDEO_NSIDS,
     VIDEO_V2_NSID,
@@ -724,7 +725,8 @@ def _video_options(f):
     for opt in reversed(
         [
             click.option(
-                "--title", required=True, help="Short title: max 300 characters."
+                "--title", default=None, help="Short title: max 300 characters. Required, except with "
+                "--from-post (default: the post's first line)."
             ),
             click.option(
                 "--description",
@@ -1195,6 +1197,126 @@ def _register_impl(
     return uri, cid, record, consent
 
 
+def _register_post(
+    client: Client,
+    post_ref: str,
+    *,
+    title,
+    description,
+    language,
+    tags,
+    keep_metadata,
+    allow_duplicate,
+    validate,
+    consent_for,
+    self_labels=(),
+    **_ignored,
+):
+    """Register the video of one of the user's own Bluesky posts (videoV2
+    #bskyPostRef) and its consent in one applyWrites commit. The bytes are
+    downloaded from the PDS only to check them (hash, metadata, size); they
+    stay where they are. Returns (uri, cid, record, consent) like
+    _register_impl."""
+    from consentvid import bsky, media
+    from consentvid.records import compute_cid, new_tid
+    from consentvid.validate import is_language
+    from consentvid.verify import fetch_verified
+    from consentvid.versions import content_hash_of_cid
+
+    did = client.me.did
+    try:
+        post_at = bsky.resolve_post_uri(post_ref)
+    except ValueError as e:
+        raise click.BadParameter(str(e), param_hint="--from-post") from None
+    if post_at.did != did:
+        raise ConsentVidError(
+            f"that post belongs to {_safe(post_at.did)}, not to you ({_safe(did)}): "
+            "you can only contribute your own videos"
+        )
+    post = fetch_verified(post_at)
+    if not post.present:
+        raise ConsentVidError(f"post {_safe(post_at)} doesn't exist (deleted?)")
+    blob = bsky.video_blob_of(post.value)
+    if blob is None:
+        raise ConsentVidError("that post has no video (app.bsky.embed.video)")
+    content_hash = content_hash_of_cid(blob.cid)
+    if content_hash is None:
+        raise ConsentVidError(f"the post's video blob {_safe(blob.cid)} is not a raw sha-256 CID")
+    if not allow_duplicate:
+        for r in _list_records(client, did, VIDEO_NSIDS):
+            if r.view.get("contentHash") == content_hash:
+                raise ConsentVidError(
+                    f"this video is already registered as {r.uri} (pass --allow-duplicate to register again)"
+                )
+
+    _confirm_strict_validation(validate)
+    _secure_config_dir()
+    with tempfile.TemporaryDirectory(dir=CONFIG_DIR) as tmp:
+        click.echo("Downloading the post's video from your PDS to check it ...")
+        path = bsky.download_blob(did, blob.cid, Path(tmp))
+        size = path.stat().st_size
+        probe = media.probe(path)
+        if probe is None:
+            if not keep_metadata:
+                raise ConfigError(
+                    "ffprobe is needed to check the post's video for identifying metadata "
+                    "(brew install ffmpeg), or pass --keep-metadata"
+                )
+            _warn("ffprobe not found: can't read duration/size or check for metadata")
+        elif probe.needs_sanitising:
+            found = list({**probe.sensitive_tags, **probe.unknown_tags}.items())[:6]
+            listed = ", ".join(f"{_safe(k)}={_safe(v)}" for k, v in found) or ", ".join(probe.extra_streams)
+            if not keep_metadata:
+                raise ConsentVidError(
+                    f"the post's video carries identifying metadata ({listed}). It can't be stripped without "
+                    "changing the bytes the post holds: delete the post and post a stripped copy "
+                    "(consentvid register-video strips files), or pass --keep-metadata to include it anyway."
+                )
+            _warn(f"including the post's video WITH identifying metadata: {listed}")
+
+    record = {
+        "title": title or bsky.default_title(post.value),
+        "contentHash": content_hash,
+        "storageRef": {"kind": "bsky", "value": blob.cid, "post": {"uri": str(post_at), "cid": post.cid}},
+        "createdAt": now_iso(),
+        "size": size,
+    }
+    if blob.mime_type in VIDEO_MIME_TYPES:
+        record["mimeType"] = blob.mime_type
+    if description:
+        record["description"] = description
+    langs = [language] if language else [
+        x for x in (post.value.get("langs") or []) if isinstance(x, str) and is_language(x)
+    ][:3]
+    if langs:
+        record["langs"] = list(dict.fromkeys(langs))
+    if tags:
+        record["tags"] = list(dict.fromkeys(tags))
+    if self_labels:
+        record["labels"] = list(dict.fromkeys(self_labels))
+    if probe:
+        record.update(probe.record_fields())
+    rkey = new_tid()
+    video_uri = f"at://{did}/{VIDEO_V2_NSID}/{rkey}"
+    rec_v2 = versions.video_record_v2(record)
+    _check_before_write(VIDEO_V2_NSID, rec_v2, did, rkey)
+    first = consent_for(video_uri, compute_cid(rec_v2))
+    _check_before_write(CONSENT_V2_NSID, versions.consent_record_v2(first), did, rkey)
+    _check_account(did, first)
+    try:
+        uri, cid, consent = _write_video_and_consent(client, did, rkey, record, consent_for, validate)
+    except Exception as e:
+        if _rate_limited(e):
+            raise _rate_limit_error(e) from e
+        if not _definite_refusal(e):
+            outcome = _write_outcome(client, did, rkey, record, True)
+            if outcome is not None:
+                click.secho("the PDS committed the write although the response was lost", fg="yellow")
+                return (*outcome[:2], record, outcome[2])
+        raise
+    return uri, cid, record, consent
+
+
 def _definite_refusal(e: BaseException) -> bool:
     """The PDS answered the write with a 4xx: nothing was committed. Anything
     else (a timeout, a network error, a 5xx, no answer) may have been
@@ -1469,6 +1591,8 @@ def register_video(video_path, validate, **video_opts):
     """Register a video: strip identifying metadata, hash, upload, and write a
     signed org.consentvid.video record. Then use attach-consent (or use
     `contribute` to do both in one step)."""
+    if not video_opts.get("title"):
+        raise click.UsageError("--title is required")
     client = get_client()
     uri, cid, record = _register(client, video_path, validate=validate, **video_opts)
     click.secho("Created video record:", fg="green")
@@ -1490,11 +1614,20 @@ def attach_consent(video_uri, replace, validate, **terms):
 
 
 @main.command()
-@click.argument("video_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument("video_path", required=False, type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option(
+    "--from-post",
+    "from_post",
+    default=None,
+    metavar="POST",
+    help="Contribute the video of one of YOUR Bluesky posts instead of a file: an at:// post URI "
+    "or a https://bsky.app/profile/<you>/post/<id> link. The bytes stay on your PDS, tied to the "
+    "post: deleting the post removes them from every dataset.",
+)
 @_video_options
 @_consent_options
 @_validate_option
-def contribute(video_path, validate, **opts):
+def contribute(video_path, from_post, validate, **opts):
     """Register a video AND attach consent in one step (the usual workflow).
 
     Both records are written in one atomic commit: either both exist or
@@ -1505,10 +1638,19 @@ def contribute(video_path, validate, **opts):
       consentvid contribute clip.mp4 --title "Making pasta" --tag cooking \\
           --attest-authorship --attest-adult --people onlyMe \\
           --modality video --modality audio --purpose training --model-class academic
+      consentvid contribute --from-post https://bsky.app/profile/me.bsky.social/post/3abc... \\
+          --attest-authorship --attest-adult --people onlyMe \\
+          --modality video --purpose training --model-class academic
 
     Any term you leave out is asked for when run interactively; nothing is
     granted by default.
     """
+    if bool(video_path) == bool(from_post):
+        raise click.UsageError("give either a VIDEO_PATH or --from-post, not both")
+    if not from_post and not opts.get("title"):
+        raise click.UsageError("--title is required")
+    if from_post and (opts.get("storage_kind") or opts.get("storage_value")):
+        raise click.UsageError("--storage-kind/--storage-value don't apply to --from-post: the bytes are the post's")
     consent_keys = (
         "attest",
         "people",
@@ -1529,7 +1671,12 @@ def contribute(video_path, validate, **opts):
     def consent_for(video_uri, video_cid):
         return _consent_record(video_uri, video_cid, **terms)
 
-    uri, cid, record, consent = _register_impl(client, video_path, validate=validate, consent_for=consent_for, **opts)
+    if from_post:
+        uri, cid, record, consent = _register_post(client, from_post, validate=validate, consent_for=consent_for, **opts)
+    else:
+        uri, cid, record, consent = _register_impl(
+            client, video_path, validate=validate, consent_for=consent_for, **opts
+        )
     click.secho("Created video record:", fg="green")
     click.echo(f"  uri:  {uri}\n  hash: {record['contentHash']}")
     c_uri, c_cid, c_record = consent
@@ -1890,6 +2037,18 @@ def export(output_path, repo, purposes, model_classes, modalities, tags, include
         if sensitive and not include_labeled:
             _warn(f"left out {_safe(vuri)}: self-labeled {', '.join(sorted(sensitive))} (--include-labeled keeps it)")
             continue
+        ref = v.get("storageRef") or {}
+        if ref.get("kind") == versions.BSKY_KIND:
+            from consentvid import bsky
+            from consentvid.verify import fetch_verified
+
+            try:
+                problem = bsky.check_post(ref, did, fetch_verified)
+            except Exception as e:  # noqa: BLE001 — fail closed: leave it out
+                problem = ("unknown", f"couldn't check its Bluesky post ({type(e).__name__}: {_safe(e)})")
+            if problem:
+                _warn(f"left out {_safe(vuri)}: {_safe(problem[1])}")
+                continue
         clips.append(Clip(curi, cids[curi], c, vuri, vcid, v, did, handle))
 
     name = name or f"consentvid-{handle.replace('.', '-').replace(':', '-')}-{date.today()}"
@@ -1932,6 +2091,17 @@ def verify(uri, as_json, no_relay_status):
     rec = fetch_verified(at)
     errors = validate_in_repo(at.collection, rec.value, at.did, rkey=at.rkey) if rec.present else []
     stale = stale_against(witnessed, rec)
+    post_problem = None
+    if rec.present and not errors and at.collection == VIDEO_V2_NSID:
+        ref = versions.video_view(VIDEO_V2_NSID, rec.value).get("storageRef") or {}
+        if ref.get("kind") == versions.BSKY_KIND:
+            from consentvid import bsky
+
+            try:
+                problem = bsky.check_post(ref, at.did, fetch_verified)
+            except Exception as e:  # noqa: BLE001 — reported, not fatal
+                problem = ("unknown", f"couldn't check the Bluesky post: {type(e).__name__}: {e}")
+            post_problem = problem[1] if problem else None
     relay = relay_lag = None
     if rec.present and not no_relay_status:
         from consentvid.appview import is_operational
@@ -1956,6 +2126,7 @@ def verify(uri, as_json, no_relay_status):
                     "relayProcessingStatus": relay_lag,
                     "relayWitnessedRev": witnessed,
                     "stale": stale,
+                    "postProblem": post_problem,
                     "value": rec.value,
                 },
                 indent=2,
@@ -1977,12 +2148,14 @@ def verify(uri, as_json, no_relay_status):
                 "the PDS served a rolled-back or stale repo",
                 fg="red",
             )
+        if post_problem:
+            click.secho(f"  BYTES: {_safe(post_problem)}", fg="red")
         if relay:
             click.secho(f"  UNAVAILABLE: the relay reports the account {_safe(relay)}", fg="red")
         elif relay_lag:
             click.secho(f"  note: relay reports {_safe(relay_lag)}; live indexes may be stale", fg="yellow")
         click.echo(json.dumps(rec.value, indent=2, default=str))
-    if not rec.present or errors or relay or stale:
+    if not rec.present or errors or relay or stale or post_problem:
         sys.exit(1)
 
 

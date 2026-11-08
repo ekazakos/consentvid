@@ -1,0 +1,15 @@
+{
+  "client_id": "https://consentvid.org/app/client-metadata.json",
+  "client_name": "ConsentVid",
+  "client_uri": "https://consentvid.org",
+  "logo_uri": "https://consentvid.org/app/logo.svg",
+  "tos_uri": "https://consentvid.org/license.html",
+  "policy_uri": "https://consentvid.org/license.html",
+  "redirect_uris": ["https://consentvid.org/app/"],
+  "scope": "atproto repo:org.consentvid.videoV2?action=create&action=delete repo:org.consentvid.consentV2?action=create&action=delete transition:generic",
+  "grant_types": ["authorization_code", "refresh_token"],
+  "response_types": ["code"],
+  "token_endpoint_auth_method": "none",
+  "application_type": "web",
+  "dpop_bound_access_tokens": true
+}

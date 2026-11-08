@@ -53,6 +53,34 @@ consentvid revoke <consent-uri>                   # withdraw consent
 consentvid revoke <video-uri> --delete-bytes      # withdraw everything (one commit) + delete bytes
 ```
 
+### Videos you already posted on Bluesky
+
+Open **[consentvid.org/app](https://consentvid.org/app/)**, sign in with your
+Bluesky account (atproto OAuth: you approve on your own server, and the app
+may only create and delete `org.consentvid.videoV2` / `consentV2` records),
+tick your video posts, choose your terms and sign. Or from the CLI:
+
+```bash
+consentvid contribute --from-post https://bsky.app/profile/you.bsky.social/post/3abc... \
+    --attest-authorship --attest-adult --people onlyMe \
+    --modality video --purpose training --model-class academic
+```
+
+Nothing is re-uploaded: the video record points at your post
+(`#bskyPostRef`) and its bytes are the video blob your PDS already serves
+(`com.atproto.sync.getBlob`). They stay tied to the post: **delete the post on
+Bluesky and the clip leaves every dataset** (readers report it
+`unavailable`), or withdraw the consent in the app or with `consentvid
+revoke`. Only your own posts can be registered (readers reject a post in
+another repo). Both the app and the CLI download the video once to check it
+against the post's CID and look for identifying metadata (GPS, device): such
+metadata can't be stripped without changing the post, so they refuse unless
+you insist (`--keep-metadata`, or the app's "include anyway"); delete the post
+and post a stripped copy instead. The title defaults to the post's first
+line, the languages to the post's. The same account checks apply as for
+`contribute`: no consent from accounts with the `bot` self-label, and no
+`training` if your `community.lexicon.preference.ai` denies it.
+
 `login` finds your PDS from your handle (handle → DID → DID document → PDS
 endpoint, as goat and the reference clients do), so your app password is only
 ever sent to the server that hosts your account, on any PDS, not just
@@ -312,6 +340,7 @@ and names the registered bytes (by sha256) to train on instead.
 | `ipfs` | **no**: unpinning doesn't remove copies elsewhere | Pinata (`CONSENTVID_PINATA_JWT`) or a Kubo node at `CONSENTVID_IPFS_API` (set explicitly). The CID is a UnixFS DAG root, *not* the file's SHA-256 |
 | `peertube` | yes | uploaded **unlisted** by default; served renditions are transcodes, so they won't match `contentHash` |
 | `url` | your responsibility | must be `https://` |
+| `bsky` (`#bskyPostRef`, V2 only) | yes: delete the post (or withdraw) | the video blob of **your own** Bluesky post, served by your PDS; readers check the post (with a proof) still exists at the pinned CID and embeds the blob, and the blob CID equals `contentHash`. `contentUrl` is the getBlob URL; any public host serving getBlob for the same DID and CID is accepted (PDS migration). Written by the web app and `contribute --from-post` |
 | `local` | n/a | `<contentHash>.<ext>` (never your file name, which can carry the capture time and device); never dereferenceable, so excluded from datasets |
 
 **Why not PDS blobs?** A PDS blob would put the bytes in the contributor's
@@ -336,7 +365,13 @@ account, and unavailable while the account is deactivated or taken down
 ([blob lifecycle](https://atproto.com/guides/blob-lifecycle)). An optional
 PDS-blob storage kind can still be added compatibly to the current lexicons
 ([docs/lexicon-v2.md](docs/lexicon-v2.md), "Compatible additions", lists what
-readers must then check).
+readers must then check). The `bsky` kind is the exception that fits:
+the bytes are a Bluesky post's video that the contributor already published,
+so their lifetime is the post's (deliberately: deleting the post withdraws
+the clip), and nothing new is put on the PDS. The AppView does not follow
+post deletions (that would mean subscribing to every post on the network);
+`resync` and `export` check the post, so run `resync` on AppView exports as
+always.
 
 > **Deleting or deactivating your ATproto account does NOT delete bytes on
 > R2/IPFS/PeerTube.** Run `consentvid revoke <video-uri> --delete-bytes` for
@@ -629,9 +664,55 @@ ruff check src tests && ruff format src tests
 
 Layout: `records` (URIs, datetimes, hashing) · `versions` (V1/V2 records
 and their common internal view) · `validate` (lexicon + domain rules) ·
-`signals` (bot label, AI-usage preferences) · `identity` (DID/handle → PDS, key) · `verify` (CAR/MST/signature
+`signals` (bot label, AI-usage preferences) · `bsky` (Bluesky-post storage) · `identity` (DID/handle → PDS, key) · `verify` (CAR/MST/signature
 proofs) · `media` (probe + metadata stripping) · `storage` · `policy` ·
 `croissant` · `resync` · `appview` · `c2pa_embed` · `cli`.
+
+### The consent web app
+
+`app/` holds the source of [consentvid.org/app](https://consentvid.org/app/)
+(plain ES modules, no framework); `web/app/` holds its static page, styles and
+OAuth client metadata (`client-metadata.json`, the `client_id`). The bundle
+`web/app/app.js` is not committed: the Pages workflow builds it with
+`npm ci --ignore-scripts && npm test && npm run build` from the exact
+versions in `app/package-lock.json` (esbuild, deterministic output).
+
+```bash
+cd app && npm ci && npm test && npm run build
+cd ../web && python3 -m http.server 8000 --bind 127.0.0.1   # http://127.0.0.1:8000/app/
+npm run vectors   # after changing the record builder: refresh tests/fixtures/web_app_vectors.json
+```
+
+- Locally (http://127.0.0.1) the app is an atproto **loopback** OAuth client
+  (no metadata to host; only `127.0.0.1` / `[::1]` origins, not `localhost`).
+- OAuth: `@atproto/oauth-client-browser`, DPoP-bound tokens kept in the
+  browser's IndexedDB. Scopes (`app/src/scopes.js`): `atproto` plus
+  `repo:org.consentvid.videoV2?action=create&action=delete` and the same for
+  `consentV2`. A PDS that rejects granular scopes (`invalid_scope`) is offered
+  `transition:generic` instead, only after the user clicks to accept it; both
+  are listed in the client metadata, as the spec requires.
+- Handles are resolved through `public.api.bsky.app` (this tells Bluesky the
+  handle and the user's IP; the authorization server is the user's own PDS).
+- Writes: one `applyWrites` per video creating the videoV2 record and its
+  sidecar consentV2 under a client-generated TID, the consent pinned to the
+  locally computed video CID (if the PDS stores a different CID, both are
+  deleted again). No `swapCommit`: creates under a fresh key can't overwrite
+  anything. Withdraw = one `applyWrites` deleting both.
+- Pre-flight checks mirror `signals.py` (bot self-label; AI-usage preference
+  denying training) and look for identifying metadata in the downloaded
+  video (a byte scan of the MP4 boxes outside `mdat`: a heuristic; the CLI
+  uses ffprobe). They explain refusals early; the binding checks are the
+  readers'.
+- Strict CSP (meta tag): scripts only from the site, images only from
+  Bluesky's video CDN (thumbnails), `connect-src https:` (any user's PDS).
+  No analytics, no third-party scripts.
+- `tests/fixtures/web_app_vectors.json` is produced by the JS record builder
+  (`npm run vectors`); `tests/test_web_app.py` validates it with the Python
+  validators and CIDs, and the JS tests fail if the file is stale.
+- Known: `npm audit` reports zod 3.x (GHSA-mrhx-c7xc-m3w5, memory exhaustion
+  on oversized collections, fixed only in zod 4) through the atproto OAuth
+  libraries; in the browser it can at worst hang the user's own tab on a
+  hostile server response. Revisit when the libraries move to zod 4.
 
 ### Maintainer notes
 

@@ -92,7 +92,7 @@ from consentvid.records import (
 from consentvid.storage import public_url
 from consentvid.validate import validate_in_repo
 from consentvid.verify import fetch_verified
-from consentvid.versions import consent_view, video_view
+from consentvid.versions import BSKY_KIND, consent_view, video_view
 from consentvid.vocab import PROVENANCE_ORDER, SENSITIVE_SELF_LABELS
 
 VALID = "valid"
@@ -584,6 +584,10 @@ def _url_matches(url: str, ref: dict) -> bool:
         )
     if kind in ("url", "r2", "peertube"):
         return url == value
+    if kind == BSKY_KIND:
+        from consentvid import bsky
+
+        return bsky.url_matches(url, ref)
     return False
 
 
@@ -877,6 +881,26 @@ def check(
         return done(MODIFIED, "contentUrl differs from the signed video record", True)
     if item.storage_kind is not None and item.storage_kind != ref.get("kind"):
         return done(MODIFIED, "manifest's storage kind differs from the signed video record", True)
+    if ref.get("kind") == BSKY_KIND:
+        # The bytes are a Bluesky post's video: the post must still exist at
+        # the pinned version (read with a proof) and embed that blob.
+        from consentvid import bsky
+
+        try:
+            problem = bsky.check_post(ref, consent_at.did, fetch)
+        except RepoUnavailable as e:
+            return done(UNAVAILABLE, f"post repo {e.status}")
+        except VerificationError as e:
+            return done(INVALID, f"post proof failed: {e}")
+        except Exception as e:  # noqa: BLE001
+            return pds_failure("post", e)
+        if problem:
+            kind, why = problem
+            return done({"gone": UNAVAILABLE, "modified": MODIFIED}.get(kind, INVALID), why, True)
+        try:
+            bsky.url_for_ref(ref)  # the PDS that serves the blob (cached for _file_object)
+        except Exception as e:  # noqa: BLE001
+            return done(UNKNOWN, f"couldn't resolve the PDS serving the video: {type(e).__name__}: {e}")
 
     # -- self-labels and account signals ------------------------------------
     sensitive = sorted(set(v.get("labels") or []) & set(SENSITIVE_SELF_LABELS))

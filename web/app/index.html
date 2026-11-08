@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: https://video.bsky.app https://video.cdn.bsky.app; media-src blob:; connect-src 'self' https:; form-action 'none'; base-uri 'none'; object-src 'none'">
+<meta name="referrer" content="no-referrer">
+<title>Contribute your Bluesky videos — ConsentVid</title>
+<meta name="description" content="Sign in with Bluesky, pick your video posts, and sign an explicit, revocable consent for AI use.">
+<meta name="theme-color" content="#7c3aed">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%237c3aed'/%3E%3Cstop offset='.5' stop-color='%23d946ef'/%3E%3Cstop offset='1' stop-color='%2306b6d4'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='16' fill='url(%23g)'/%3E%3Cpath d='M19 33 l9 9 l17 -19' fill='none' stroke='white' stroke-width='6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,500;1,9..144,500&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../styles.css">
+<link rel="stylesheet" href="app.css">
+<script type="module" src="app.js"></script>
+</head>
+<body>
+<div class="glow" aria-hidden="true"><span class="g1"></span><span class="g2"></span><span class="g3"></span></div>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="../"><b>consentvid</b><span class="dot">.org</span></a>
+    <nav class="nav">
+      <a href="../license.html">license</a>
+      <span id="who" class="who mono" hidden></span>
+      <button id="signout" class="btn ghost small" type="button" hidden>sign out</button>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap app">
+  <h1>Contribute your <span class="grad">Bluesky videos</span></h1>
+  <p class="lede">Pick videos you posted on Bluesky and sign an explicit consent saying how they may be used for AI.
+    Your videos stay on your own server, tied to your posts: delete a post, or withdraw here, and it leaves every dataset.</p>
+
+  <noscript><p class="notice error">This page needs JavaScript: it signs your consent records in your browser.</p></noscript>
+  <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+
+  <section id="signin" class="card" hidden aria-labelledby="signin-h">
+    <h2 id="signin-h">Sign in with Bluesky</h2>
+    <p>You'll be sent to your own server to approve. ConsentVid only asks to create and delete
+      <span class="mono">org.consentvid.*</span> records in your account. It can't post, follow or read your private data.</p>
+    <form id="signin-form" class="row">
+      <label class="grow">
+        <span class="sr-only">Your handle</span>
+        <input id="handle" name="handle" type="text" autocomplete="username" spellcheck="false" autocapitalize="none"
+               placeholder="you.bsky.social" required>
+      </label>
+      <button class="btn primary" type="submit">Sign in</button>
+    </form>
+    <p id="deeplink-note" class="muted small" hidden></p>
+  </section>
+
+  <section id="blocked" class="card" hidden>
+    <h2>Consent isn't possible from this account</h2>
+    <p id="blocked-why"></p>
+  </section>
+
+  <section id="contribute" hidden>
+    <div class="card">
+      <h2>1. Choose videos</h2>
+      <p class="muted small">Your video posts on Bluesky. Ones already in ConsentVid can be withdrawn.</p>
+      <ul id="posts" class="posts"></ul>
+      <p id="posts-empty" class="muted" hidden>No video posts found in your account.</p>
+      <button id="more" class="btn ghost small" type="button" hidden>Load older posts</button>
+    </div>
+
+    <form id="terms" class="card" novalidate>
+      <h2>2. Your consent</h2>
+      <p class="muted small">Nothing is pre-selected: you grant only what you tick. You can withdraw any time.</p>
+
+      <fieldset>
+        <legend>What may be used</legend>
+        <div class="choices" data-field="modalities"></div>
+      </fieldset>
+      <fieldset>
+        <legend>What it may be used for</legend>
+        <div class="choices" data-field="purposes"></div>
+      </fieldset>
+      <fieldset>
+        <legend>Who may use it</legend>
+        <div class="choices" data-field="modelClasses"></div>
+      </fieldset>
+      <fieldset>
+        <legend>Who appears or is heard in the video</legend>
+        <div class="choices" data-field="peoplePresent" data-single></div>
+      </fieldset>
+      <fieldset>
+        <legend>More</legend>
+        <label>Expiry
+          <select id="expiry">
+            <option value="">No expiry (until you withdraw)</option>
+            <option value="1y">1 year</option>
+            <option value="2y">2 years</option>
+            <option value="5y">5 years</option>
+          </select>
+        </label>
+        <label>Compensation you expect (a declaration, not enforced)
+          <select id="compensation"></select>
+        </label>
+        <label>Why you may grant this
+          <select id="rightsBasis"></select>
+        </label>
+        <label>Tags (optional, comma-separated)
+          <input id="tags" type="text" maxlength="600" placeholder="cooking, outdoors">
+        </label>
+        <div class="labels">
+          <span>Content labels (clips with these are left out of datasets unless researchers opt in)</span>
+          <div class="choices" data-field="labels"></div>
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>Attestations (signed with your account)</legend>
+        <label class="check"><input type="checkbox" id="attest-authorship">
+          I recorded these videos myself, or otherwise hold the rights to them, and may grant this consent.</label>
+        <label class="check"><input type="checkbox" id="attest-adult">
+          I am 18 or older (or the age of majority where I live) and able to consent.</label>
+      </fieldset>
+    </form>
+
+    <div class="card summary">
+      <h2>3. Review and sign</h2>
+      <div id="summary" class="muted">Choose at least one video and your terms.</div>
+      <ul id="errors" class="errors" hidden></ul>
+      <label class="check" id="keep-metadata-row" hidden><input type="checkbox" id="keep-metadata">
+        Include videos that carry identifying metadata anyway (not recommended).</label>
+      <button id="sign" class="btn primary" type="button" disabled>Sign consent</button>
+      <ol id="log" class="log" aria-live="polite"></ol>
+    </div>
+  </section>
+
+  <p class="muted small foot">Your consent is a public, signed record in your own Bluesky account
+    (<span class="mono">org.consentvid.consentV2</span>), readable by anyone. No personal data beyond what your posts
+    already show is published. See the <a href="../license.html">contributor license</a>.</p>
+</main>
+</body>
+</html>

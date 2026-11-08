@@ -70,6 +70,17 @@ Publishing: `consentvid publish-lexicons` creates the two new schema records
 (a new NSID has no published version to be compatible with) and updates the
 V1 ones only within the evolution rules.
 
+## Shipped compatible additions
+
+- **`#bskyPostRef`** (storage union member, added 2026-11-08): `{post:
+  com.atproto.repo.strongRef, blob: cid}`, the video of the contributor's own
+  Bluesky post. An open union may gain members (`compat_errors` accepts it).
+  Not a blob reference: the bytes' lifetime stays the post's. Readers
+  require `post.uri` to be an `app.bsky.feed.post` in the same repo, `blob` to
+  equal `contentHash`, and the post, read with a proof at `post.cid`, to embed
+  that blob (`consentvid.bsky`; README, "Storage backends"). Readers that
+  predate it treat such clips as unreachable, as for any unknown member.
+
 ## Possible compatible additions
 
 These fit the evolution rules (`compat_errors` accepts them), so they can be

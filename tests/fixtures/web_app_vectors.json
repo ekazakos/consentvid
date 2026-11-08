@@ -1,0 +1,492 @@
+[
+  {
+    "name": "minimal",
+    "did": "did:plc:aliceaaaaaaaaaaaaaaaaaaa",
+    "rkey": "3mzrrcdrdgs2a",
+    "post": {
+      "$type": "app.bsky.feed.post",
+      "text": "Making pasta 🍝\nwith friends",
+      "langs": [
+        "en",
+        "EN",
+        "cs"
+      ],
+      "createdAt": "2026-11-08T06:18:33.580Z",
+      "embed": {
+        "$type": "app.bsky.embed.video",
+        "aspectRatio": {
+          "height": 1080,
+          "width": 1920
+        },
+        "video": {
+          "$type": "blob",
+          "mimeType": "video/mp4",
+          "ref": {
+            "$link": "bafkreifwkq2hesfskgekpkjbmih2ityaslss3rvd5wsmdytyl2pkdjxu7m"
+          },
+          "size": 12262169
+        }
+      }
+    },
+    "videoUri": "at://did:plc:aliceaaaaaaaaaaaaaaaaaaa/org.consentvid.videoV2/3mzrrcdrdgs2a",
+    "videoCid": "bafyreie2snskn7nv2vtjlahsu45jmtd3wc7szwm4u25ybpo2uiz22vn2ai",
+    "video": {
+      "$type": "org.consentvid.videoV2",
+      "title": "Making pasta 🍝",
+      "contentHash": "bafkreifwkq2hesfskgekpkjbmih2ityaslss3rvd5wsmdytyl2pkdjxu7m",
+      "storage": {
+        "$type": "org.consentvid.videoV2#bskyPostRef",
+        "post": {
+          "uri": "at://did:plc:aliceaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/3mzrrcdrdgs2f",
+          "cid": "bafyreicamp74xmd5e5riqch6ocgwqb2yfs63zi4ukovfukazbawioueuci"
+        },
+        "blob": "bafkreifwkq2hesfskgekpkjbmih2ityaslss3rvd5wsmdytyl2pkdjxu7m"
+      },
+      "createdAt": "2026-11-08T07:00:00.000Z",
+      "mimeType": "video/mp4",
+      "langs": [
+        "en",
+        "cs"
+      ]
+    },
+    "consent": {
+      "$type": "org.consentvid.consentV2",
+      "subject": {
+        "uri": "at://did:plc:aliceaaaaaaaaaaaaaaaaaaa/org.consentvid.videoV2/3mzrrcdrdgs2a",
+        "cid": "bafyreie2snskn7nv2vtjlahsu45jmtd3wc7szwm4u25ybpo2uiz22vn2ai"
+      },
+      "modalities": [
+        "video",
+        "audio"
+      ],
+      "purposes": [
+        "training"
+      ],
+      "modelClasses": [
+        "academic"
+      ],
+      "compensation": "none",
+      "rightsBasis": "own-recording",
+      "captureProvenance": "self-attested",
+      "peoplePresent": "only-me",
+      "authorshipAttested": true,
+      "adultAttested": true,
+      "createdAt": "2026-11-08T07:00:00.000Z"
+    },
+    "body": {
+      "repo": "did:plc:aliceaaaaaaaaaaaaaaaaaaa",
+      "writes": [
+        {
+          "$type": "com.atproto.repo.applyWrites#create",
+          "collection": "org.consentvid.videoV2",
+          "rkey": "3mzrrcdrdgs2a",
+          "value": {
+            "$type": "org.consentvid.videoV2",
+            "title": "Making pasta 🍝",
+            "contentHash": "bafkreifwkq2hesfskgekpkjbmih2ityaslss3rvd5wsmdytyl2pkdjxu7m",
+            "storage": {
+              "$type": "org.consentvid.videoV2#bskyPostRef",
+              "post": {
+                "uri": "at://did:plc:aliceaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/3mzrrcdrdgs2f",
+                "cid": "bafyreicamp74xmd5e5riqch6ocgwqb2yfs63zi4ukovfukazbawioueuci"
+              },
+              "blob": "bafkreifwkq2hesfskgekpkjbmih2ityaslss3rvd5wsmdytyl2pkdjxu7m"
+            },
+            "createdAt": "2026-11-08T07:00:00.000Z",
+            "mimeType": "video/mp4",
+            "langs": [
+              "en",
+              "cs"
+            ]
+          }
+        },
+        {
+          "$type": "com.atproto.repo.applyWrites#create",
+          "collection": "org.consentvid.consentV2",
+          "rkey": "3mzrrcdrdgs2a",
+          "value": {
+            "$type": "org.consentvid.consentV2",
+            "subject": {
+              "uri": "at://did:plc:aliceaaaaaaaaaaaaaaaaaaa/org.consentvid.videoV2/3mzrrcdrdgs2a",
+              "cid": "bafyreie2snskn7nv2vtjlahsu45jmtd3wc7szwm4u25ybpo2uiz22vn2ai"
+            },
+            "modalities": [
+              "video",
+              "audio"
+            ],
+            "purposes": [
+              "training"
+            ],
+            "modelClasses": [
+              "academic"
+            ],
+            "compensation": "none",
+            "rightsBasis": "own-recording",
+            "captureProvenance": "self-attested",
+            "peoplePresent": "only-me",
+            "authorshipAttested": true,
+            "adultAttested": true,
+            "createdAt": "2026-11-08T07:00:00.000Z"
+          }
+        }
+      ]
+    },
+    "withdraw": {
+      "repo": "did:plc:aliceaaaaaaaaaaaaaaaaaaa",
+      "writes": [
+        {
+          "$type": "com.atproto.repo.applyWrites#delete",
+          "collection": "org.consentvid.consentV2",
+          "rkey": "3mzrrcdrdgs2a"
+        },
+        {
+          "$type": "com.atproto.repo.applyWrites#delete",
+          "collection": "org.consentvid.videoV2",
+          "rkey": "3mzrrcdrdgs2a"
+        }
+      ]
+    }
+  },
+  {
+    "name": "everything",
+    "did": "did:plc:aliceaaaaaaaaaaaaaaaaaaa",
+    "rkey": "3mzrrcdrdgs2b",
+    "post": {
+      "$type": "app.bsky.feed.post",
+      "text": "Making pasta 🍝\nwith friends",
+      "langs": [
+        "en",
+        "EN",
+        "cs"
+      ],
+      "createdAt": "2026-11-08T06:18:33.580Z",
+      "embed": {
+        "$type": "app.bsky.embed.video",
+        "aspectRatio": {
+          "height": 1080,
+          "width": 1920
+        },
+        "video": {
+          "$type": "blob",
+          "mimeType": "video/mp4",
+          "ref": {
+            "$link": "bafkreifwkq2hesfskgekpkjbmih2ityaslss3rvd5wsmdytyl2pkdjxu7m"
+          },
+          "size": 12262169
+        }
+      }
+    },
+    "videoUri": "at://did:plc:aliceaaaaaaaaaaaaaaaaaaa/org.consentvid.videoV2/3mzrrcdrdgs2b",
+    "videoCid": "bafyreicuki6topfrslxhdnjwjcfwslgt5rbqv3tvuvut3am4wgncbe4uom",
+    "video": {
+      "$type": "org.consentvid.videoV2",
+      "title": "Pasta night",
+      "contentHash": "bafkreifwkq2hesfskgekpkjbmih2ityaslss3rvd5wsmdytyl2pkdjxu7m",
+      "storage": {
+        "$type": "org.consentvid.videoV2#bskyPostRef",
+        "post": {
+          "uri": "at://did:plc:aliceaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/3mzrrcdrdgs2f",
+          "cid": "bafyreicamp74xmd5e5riqch6ocgwqb2yfs63zi4ukovfukazbawioueuci"
+        },
+        "blob": "bafkreifwkq2hesfskgekpkjbmih2ityaslss3rvd5wsmdytyl2pkdjxu7m"
+      },
+      "createdAt": "2026-11-08T07:00:00.000Z",
+      "description": "A cooking clip.\nShot at home.",
+      "mimeType": "video/mp4",
+      "size": 12262169,
+      "durationMs": 41500,
+      "width": 1920,
+      "height": 1080,
+      "langs": [
+        "en",
+        "cs"
+      ],
+      "tags": [
+        "cooking",
+        "food"
+      ],
+      "labels": {
+        "$type": "com.atproto.label.defs#selfLabels",
+        "values": [
+          {
+            "val": "nudity"
+          }
+        ]
+      }
+    },
+    "consent": {
+      "$type": "org.consentvid.consentV2",
+      "subject": {
+        "uri": "at://did:plc:aliceaaaaaaaaaaaaaaaaaaa/org.consentvid.videoV2/3mzrrcdrdgs2b",
+        "cid": "bafyreicuki6topfrslxhdnjwjcfwslgt5rbqv3tvuvut3am4wgncbe4uom"
+      },
+      "modalities": [
+        "video",
+        "audio",
+        "transcript",
+        "face",
+        "voice"
+      ],
+      "purposes": [
+        "training",
+        "evaluation",
+        "benchmarking"
+      ],
+      "modelClasses": [
+        "academic",
+        "open-weights",
+        "commercial"
+      ],
+      "compensation": "credit-only",
+      "rightsBasis": "licensed",
+      "captureProvenance": "self-attested",
+      "peoplePresent": "all-consented",
+      "authorshipAttested": true,
+      "adultAttested": true,
+      "createdAt": "2026-11-08T07:00:00.000Z",
+      "expiresAt": "2028-11-08T06:20:00.000Z"
+    },
+    "body": {
+      "repo": "did:plc:aliceaaaaaaaaaaaaaaaaaaa",
+      "writes": [
+        {
+          "$type": "com.atproto.repo.applyWrites#create",
+          "collection": "org.consentvid.videoV2",
+          "rkey": "3mzrrcdrdgs2b",
+          "value": {
+            "$type": "org.consentvid.videoV2",
+            "title": "Pasta night",
+            "contentHash": "bafkreifwkq2hesfskgekpkjbmih2ityaslss3rvd5wsmdytyl2pkdjxu7m",
+            "storage": {
+              "$type": "org.consentvid.videoV2#bskyPostRef",
+              "post": {
+                "uri": "at://did:plc:aliceaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/3mzrrcdrdgs2f",
+                "cid": "bafyreicamp74xmd5e5riqch6ocgwqb2yfs63zi4ukovfukazbawioueuci"
+              },
+              "blob": "bafkreifwkq2hesfskgekpkjbmih2ityaslss3rvd5wsmdytyl2pkdjxu7m"
+            },
+            "createdAt": "2026-11-08T07:00:00.000Z",
+            "description": "A cooking clip.\nShot at home.",
+            "mimeType": "video/mp4",
+            "size": 12262169,
+            "durationMs": 41500,
+            "width": 1920,
+            "height": 1080,
+            "langs": [
+              "en",
+              "cs"
+            ],
+            "tags": [
+              "cooking",
+              "food"
+            ],
+            "labels": {
+              "$type": "com.atproto.label.defs#selfLabels",
+              "values": [
+                {
+                  "val": "nudity"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "$type": "com.atproto.repo.applyWrites#create",
+          "collection": "org.consentvid.consentV2",
+          "rkey": "3mzrrcdrdgs2b",
+          "value": {
+            "$type": "org.consentvid.consentV2",
+            "subject": {
+              "uri": "at://did:plc:aliceaaaaaaaaaaaaaaaaaaa/org.consentvid.videoV2/3mzrrcdrdgs2b",
+              "cid": "bafyreicuki6topfrslxhdnjwjcfwslgt5rbqv3tvuvut3am4wgncbe4uom"
+            },
+            "modalities": [
+              "video",
+              "audio",
+              "transcript",
+              "face",
+              "voice"
+            ],
+            "purposes": [
+              "training",
+              "evaluation",
+              "benchmarking"
+            ],
+            "modelClasses": [
+              "academic",
+              "open-weights",
+              "commercial"
+            ],
+            "compensation": "credit-only",
+            "rightsBasis": "licensed",
+            "captureProvenance": "self-attested",
+            "peoplePresent": "all-consented",
+            "authorshipAttested": true,
+            "adultAttested": true,
+            "createdAt": "2026-11-08T07:00:00.000Z",
+            "expiresAt": "2028-11-08T06:20:00.000Z"
+          }
+        }
+      ]
+    },
+    "withdraw": {
+      "repo": "did:plc:aliceaaaaaaaaaaaaaaaaaaa",
+      "writes": [
+        {
+          "$type": "com.atproto.repo.applyWrites#delete",
+          "collection": "org.consentvid.consentV2",
+          "rkey": "3mzrrcdrdgs2b"
+        },
+        {
+          "$type": "com.atproto.repo.applyWrites#delete",
+          "collection": "org.consentvid.videoV2",
+          "rkey": "3mzrrcdrdgs2b"
+        }
+      ]
+    }
+  },
+  {
+    "name": "record-with-media",
+    "did": "did:plc:aliceaaaaaaaaaaaaaaaaaaa",
+    "rkey": "3mzrrcdrdgs2c",
+    "post": {
+      "$type": "app.bsky.feed.post",
+      "text": "",
+      "langs": [],
+      "createdAt": "2026-11-08T06:18:33.580Z",
+      "embed": {
+        "$type": "app.bsky.embed.recordWithMedia",
+        "record": {
+          "$type": "app.bsky.embed.record",
+          "record": {
+            "uri": "at://did:plc:aliceaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/3mzrrcaaaaa2a",
+            "cid": "bafyreicamp74xmd5e5riqch6ocgwqb2yfs63zi4ukovfukazbawioueuci"
+          }
+        },
+        "media": {
+          "$type": "app.bsky.embed.video",
+          "aspectRatio": {
+            "height": 1080,
+            "width": 1920
+          },
+          "video": {
+            "$type": "blob",
+            "mimeType": "video/mp4",
+            "ref": {
+              "$link": "bafkreifwkq2hesfskgekpkjbmih2ityaslss3rvd5wsmdytyl2pkdjxu7m"
+            },
+            "size": 12262169
+          }
+        }
+      }
+    },
+    "videoUri": "at://did:plc:aliceaaaaaaaaaaaaaaaaaaa/org.consentvid.videoV2/3mzrrcdrdgs2c",
+    "videoCid": "bafyreibdcad3bxuwsbdaxolmt3a2crzsdv6knj4h5xlam6ub6lupn3pnbi",
+    "video": {
+      "$type": "org.consentvid.videoV2",
+      "title": "Bluesky video",
+      "contentHash": "bafkreifwkq2hesfskgekpkjbmih2ityaslss3rvd5wsmdytyl2pkdjxu7m",
+      "storage": {
+        "$type": "org.consentvid.videoV2#bskyPostRef",
+        "post": {
+          "uri": "at://did:plc:aliceaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/3mzrrcdrdgs2f",
+          "cid": "bafyreicamp74xmd5e5riqch6ocgwqb2yfs63zi4ukovfukazbawioueuci"
+        },
+        "blob": "bafkreifwkq2hesfskgekpkjbmih2ityaslss3rvd5wsmdytyl2pkdjxu7m"
+      },
+      "createdAt": "2026-11-08T07:00:00.000Z",
+      "mimeType": "video/mp4"
+    },
+    "consent": {
+      "$type": "org.consentvid.consentV2",
+      "subject": {
+        "uri": "at://did:plc:aliceaaaaaaaaaaaaaaaaaaa/org.consentvid.videoV2/3mzrrcdrdgs2c",
+        "cid": "bafyreibdcad3bxuwsbdaxolmt3a2crzsdv6knj4h5xlam6ub6lupn3pnbi"
+      },
+      "modalities": [
+        "video"
+      ],
+      "purposes": [
+        "training"
+      ],
+      "modelClasses": [
+        "academic"
+      ],
+      "compensation": "monetary",
+      "rightsBasis": "own-recording",
+      "captureProvenance": "self-attested",
+      "peoplePresent": "no-identifiable-people",
+      "authorshipAttested": true,
+      "adultAttested": true,
+      "createdAt": "2026-11-08T07:00:00.000Z"
+    },
+    "body": {
+      "repo": "did:plc:aliceaaaaaaaaaaaaaaaaaaa",
+      "writes": [
+        {
+          "$type": "com.atproto.repo.applyWrites#create",
+          "collection": "org.consentvid.videoV2",
+          "rkey": "3mzrrcdrdgs2c",
+          "value": {
+            "$type": "org.consentvid.videoV2",
+            "title": "Bluesky video",
+            "contentHash": "bafkreifwkq2hesfskgekpkjbmih2ityaslss3rvd5wsmdytyl2pkdjxu7m",
+            "storage": {
+              "$type": "org.consentvid.videoV2#bskyPostRef",
+              "post": {
+                "uri": "at://did:plc:aliceaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/3mzrrcdrdgs2f",
+                "cid": "bafyreicamp74xmd5e5riqch6ocgwqb2yfs63zi4ukovfukazbawioueuci"
+              },
+              "blob": "bafkreifwkq2hesfskgekpkjbmih2ityaslss3rvd5wsmdytyl2pkdjxu7m"
+            },
+            "createdAt": "2026-11-08T07:00:00.000Z",
+            "mimeType": "video/mp4"
+          }
+        },
+        {
+          "$type": "com.atproto.repo.applyWrites#create",
+          "collection": "org.consentvid.consentV2",
+          "rkey": "3mzrrcdrdgs2c",
+          "value": {
+            "$type": "org.consentvid.consentV2",
+            "subject": {
+              "uri": "at://did:plc:aliceaaaaaaaaaaaaaaaaaaa/org.consentvid.videoV2/3mzrrcdrdgs2c",
+              "cid": "bafyreibdcad3bxuwsbdaxolmt3a2crzsdv6knj4h5xlam6ub6lupn3pnbi"
+            },
+            "modalities": [
+              "video"
+            ],
+            "purposes": [
+              "training"
+            ],
+            "modelClasses": [
+              "academic"
+            ],
+            "compensation": "monetary",
+            "rightsBasis": "own-recording",
+            "captureProvenance": "self-attested",
+            "peoplePresent": "no-identifiable-people",
+            "authorshipAttested": true,
+            "adultAttested": true,
+            "createdAt": "2026-11-08T07:00:00.000Z"
+          }
+        }
+      ]
+    },
+    "withdraw": {
+      "repo": "did:plc:aliceaaaaaaaaaaaaaaaaaaa",
+      "writes": [
+        {
+          "$type": "com.atproto.repo.applyWrites#delete",
+          "collection": "org.consentvid.consentV2",
+          "rkey": "3mzrrcdrdgs2c"
+        },
+        {
+          "$type": "com.atproto.repo.applyWrites#delete",
+          "collection": "org.consentvid.videoV2",
+          "rkey": "3mzrrcdrdgs2c"
+        }
+      ]
+    }
+  }
+]

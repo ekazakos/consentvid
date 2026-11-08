@@ -18,3 +18,8 @@ web/preview/
 
 # Personal study notes, kept local.
 STUDY.md
+
+# The consent web app: dependencies, and the bundle (built by the Pages
+# workflow from app/ with `npm ci && npm run build`).
+app/node_modules/
+web/app/app.js

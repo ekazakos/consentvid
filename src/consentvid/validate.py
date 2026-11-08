@@ -61,8 +61,10 @@ from consentvid.records import (
     parse_dt,
     url_host_port_error,
 )
-from consentvid.versions import SELF_LABELS_TYPE, consent_view, storage_ref_of, video_view
+from consentvid.versions import BSKY_KIND, SELF_LABELS_TYPE, consent_view, storage_ref_of, video_view
 from consentvid.vocab import IDENTITY_MODALITIES, PEOPLE_PRESENT, PEOPLE_PRESENT_V2
+
+BSKY_POST_NSID = "app.bsky.feed.post"
 
 # Used with fullmatch only ('$' would accept a trailing newline).
 _SHA256_RE = re.compile(r"sha256-[0-9a-f]{64}")
@@ -263,6 +265,8 @@ def _video_v2_rules(record: dict) -> list[str]:
     if isinstance(storage, dict):
         ref = storage_ref_of(storage, VIDEO_V2_NSID)
         errors.extend(e.replace("storageRef.value", "storage") for e in storage_ref_errors(ref))
+        if ref.get("kind") == BSKY_KIND and isinstance(h, str) and ref.get("value") != h:
+            errors.append("storage.blob must equal contentHash: the post's video blob is the registered bytes")
     return errors
 
 
@@ -367,6 +371,19 @@ def storage_ref_errors(ref) -> list[str]:
         if not is_ipfs_cid(value.removeprefix("ipfs://")):
             return ["storageRef.value for 'ipfs' must be a CID (bafy... or Qm...), optionally ipfs://-prefixed"]
         return []
+    if kind == BSKY_KIND:
+        errors = []
+        if not (_is_cid(value) and _cid_codec(value) == _RAW):
+            errors.append("storage.blob must be the CID of the raw video bytes (bafkrei...)")
+        post = ref.get("post") if isinstance(ref.get("post"), dict) else {}
+        try:
+            parse_at_uri(post.get("uri") if isinstance(post.get("uri"), str) else "", BSKY_POST_NSID)
+        except ValueError as e:
+            errors.append(f"storage.post.uri must be an app.bsky.feed.post URI: {e}")
+        cid = post.get("cid")
+        if isinstance(cid, str) and _is_cid(cid) and _cid_codec(cid) != _DAG_CBOR:
+            errors.append("storage.post.cid must be the CID of a record (dag-cbor)")
+        return errors
     # 'local' (and kinds we don't know): opaque names, never dereferenced.
     if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value):
         return ["storageRef.value must not contain control characters"]
@@ -387,6 +404,24 @@ def consent_ownership_errors(consent_did: str, record: dict, nsid: str = CONSENT
         return [
             f"videoUri belongs to {video.did}, but the consent is written by "
             f"{consent_did}: consent may only reference the writer's own video"
+        ]
+    return []
+
+
+def post_ownership_errors(repo_did: str, record: dict) -> list[str]:
+    """A videoV2 record may only point at a Bluesky post in its own repo:
+    otherwise anyone could register, and consent for, someone else's video."""
+    ref = storage_ref_of(record.get("storage"), VIDEO_V2_NSID)
+    if ref.get("kind") != BSKY_KIND:
+        return []
+    try:
+        post = parse_at_uri((ref.get("post") or {}).get("uri") or "", BSKY_POST_NSID)
+    except ValueError:
+        return []  # reported by storage_ref_errors
+    if post.did != repo_did:
+        return [
+            f"storage.post belongs to {post.did}, but the video record is in {repo_did}'s repo: "
+            "only your own Bluesky posts can be registered"
         ]
     return []
 
@@ -426,6 +461,8 @@ def validate_in_repo(
     errors = validate_record(nsid, record, now=now)
     if rkey is not None and not is_tid(rkey):
         errors.append(f"record key {rkey!r} is not a TID (lexicon key: tid)")
+    if nsid == VIDEO_V2_NSID and isinstance(record, dict) and not errors:
+        errors.extend(post_ownership_errors(repo_did, record))
     if nsid in CONSENT_NSIDS and isinstance(record, dict):
         if not errors:
             errors.extend(consent_ownership_errors(repo_did, record, nsid))

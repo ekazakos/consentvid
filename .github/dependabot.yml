@@ -5,3 +5,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+  # The consent web app's npm dependencies (app/package-lock.json).
+  - package-ecosystem: npm
+    directory: /app
+    schedule:
+      interval: weekly
