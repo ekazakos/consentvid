@@ -218,13 +218,15 @@ def _video_options(f):
                 "--storage-kind",
                 type=click.Choice(STORAGE_KINDS),
                 default=None,
-                help="Where the bytes live. Default: $CONSENTVID_STORAGE, else r2 if "
-                "configured, else local (not usable in shared datasets).",
+                help="Where the bytes live. 'pds' uploads the video as a blob to your own "
+                "Bluesky PDS (no post; up to 300 MB, less on some PDSes; withdrawing frees it). "
+                "Default: $CONSENTVID_STORAGE, else r2 if configured, else local (not usable in "
+                "shared datasets).",
             ),
             click.option(
                 "--storage-value",
                 default=None,
-                help="Existing pointer (URL or CID). Omit for r2/ipfs/peertube to upload. "
+                help="Existing pointer (URL or CID). Omit for r2/ipfs/peertube/pds to upload. "
                 "The file must already be stripped of metadata: if not, a clean copy is "
                 "written next to it for you to host instead.",
             ),
@@ -867,7 +869,7 @@ def verify(uri, as_json, no_relay_status):
     stale = stale_against(witnessed, rec)
     post_problem = None
     if rec.present and not errors and at.collection == VIDEO_V2_NSID:
-        ref = versions.video_view(VIDEO_V2_NSID, rec.value).get("storageRef") or {}
+        ref = versions.video_view(VIDEO_V2_NSID, rec.value, at.did).get("storageRef") or {}
         if ref.get("kind") == versions.BSKY_KIND:
             from consentvid import bsky
 
@@ -1105,7 +1107,7 @@ def embed_c2pa(video_path, consent_uri, output_path):
     errors = validate_in_repo(video_nsid, video.value, video_at.did, rkey=video_at.rkey)
     if errors:
         raise ConsentVidError(f"the consent's video record is invalid: {errors[0]}")
-    v = versions.video_view(video_nsid, video.value)
+    v = versions.video_view(video_nsid, video.value, video_at.did)
     if c["videoCid"] != video.cid:  # validate_in_repo requires videoCid
         raise ConsentVidError("the video record changed after consent was given; consent no longer applies")
     actual = hash_file(video_path)
@@ -1924,7 +1926,7 @@ def appview_export(output_path, purposes, model_classes, modalities, provenance,
             ):
                 raise ValueError("no longer valid")
             consent = versions.consent_view(consent_nsid, raw_consent)
-            video = versions.video_view(video_at.collection, raw_video)
+            video = versions.video_view(video_at.collection, raw_video, r["did"])
         except Exception as e:  # noqa: BLE001 — one bad row must not abort the export
             _warn(f"skipping indexed consent {_safe(r['uri'])}: {type(e).__name__}: {_safe(e)}")
             continue

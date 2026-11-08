@@ -2,20 +2,26 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import {
+  PDS_BLOB_MAX_SIZE,
   TID_RE,
   buildContribution,
+  buildUploadContribution,
   cleanLine,
   consentRecord,
   defaultTitle,
   encodeTid,
   expiryFrom,
   isRawSha256Cid,
+  mimeForName,
   newTid,
   parsePostParam,
   postLangs,
   rawCid,
   recordCid,
+  sameContainer,
   termsErrors,
+  toIpld,
+  uploadVideoRecord,
   videoBlobOf,
   videoErrors,
   videoRecord,
@@ -160,4 +166,77 @@ test('expiry choices', () => {
   const now = new Date('2026-11-08T07:00:00.000Z')
   assert.equal(expiryFrom('', now), undefined)
   assert.equal(expiryFrom('2y', now), '2028-11-08T07:00:00.000Z')
+})
+
+// ---------------------------------------------------- uploads (PDS blob) --
+
+const HELLO = 'bafkreibm6jg3ux5qumhcn2b3flc3tyu6dmlb4xa7u5bf44yegnrjhc4yeq'
+const upload = (extra = {}) => ({
+  title: 'Kitchen',
+  mimeType: 'video/mp4',
+  blob: { cid: HELLO, mimeType: 'video/mp4', size: 5 },
+  createdAt: '2026-11-08T07:00:00.000Z',
+  ...extra,
+})
+
+test('upload record: a blob ref in the user’s own PDS', async () => {
+  const rec = uploadVideoRecord(upload())
+  assert.deepEqual(rec.storage, {
+    $type: 'org.consentvid.videoV2#pdsBlobRef',
+    blob: { $type: 'blob', ref: { $link: HELLO }, mimeType: 'video/mp4', size: 5 },
+  })
+  assert.equal(rec.contentHash, HELLO)
+  assert.equal(rec.size, 5)
+  assert.equal(await rawCid(new TextEncoder().encode('hello')), HELLO)
+  assert.equal(PDS_BLOB_MAX_SIZE, 300_000_000)
+})
+
+test('upload record refusals', () => {
+  assert.throws(() => uploadVideoRecord(upload({ title: ' ​ ' })), /title is required/)
+  assert.throws(
+    () => uploadVideoRecord(upload({ blob: { cid: HELLO, mimeType: 'video/webm', size: 5 } })),
+    /identified the file/,
+  )
+  assert.throws(() => uploadVideoRecord(upload({ mimeType: 'application/x-foo' })), /unsupported video type/)
+  const recordCidNotRaw = 'bafyreigh2akiscaildcqabsyg3dfr6chu3fgpregiymsck7e7aqa4s52zy'
+  assert.throws(
+    () => uploadVideoRecord(upload({ blob: { cid: recordCidNotRaw, mimeType: 'video/mp4', size: 5 } })),
+    /raw sha-256/,
+  )
+  // The PDS's registered name for the same container is fine.
+  const mkv = uploadVideoRecord(
+    upload({ mimeType: 'video/x-matroska', blob: { cid: HELLO, mimeType: 'video/matroska', size: 5 } }),
+  )
+  assert.equal(mkv.storage.blob.mimeType, 'video/matroska')
+})
+
+test('mime helpers', () => {
+  assert.equal(mimeForName('IMG_0001.MOV'), 'video/quicktime')
+  assert.equal(mimeForName('a.mkv'), 'video/x-matroska')
+  assert.equal(mimeForName('a.txt'), null)
+  assert.ok(sameContainer('video/x-msvideo', 'video/vnd.avi'))
+  assert.ok(!sameContainer('video/mp4', 'video/quicktime'))
+})
+
+test('blob refs are CID links in the record CID', async () => {
+  const rec = uploadVideoRecord(upload())
+  assert.equal(toIpld(rec).storage.blob.ref.toString(), HELLO)
+  const asString = structuredClone(rec)
+  asString.storage.blob.ref = HELLO // a string is not a link: a different CID
+  assert.notEqual(await recordCid(rec), await recordCid(asString))
+  const built = await buildUploadContribution({
+    did: 'did:plc:aliceaaaaaaaaaaaaaaaaaaa',
+    rkey: '3mzrrcdrdgs2d',
+    video: upload(),
+    terms: {
+      modalities: ['video'],
+      purposes: ['training'],
+      modelClasses: ['academic'],
+      peoplePresent: 'only-me',
+      authorshipAttested: true,
+      adultAttested: true,
+    },
+    createdAt: '2026-11-08T07:00:00.000Z',
+  })
+  assert.equal(built.consent.subject.cid, await recordCid(built.video))
 })

@@ -51,10 +51,12 @@ from consentvid.records import (
     now_iso,
     parse_at_uri,
     parse_dt,
+    raw_cid_from_sha256,
     safe_text,
     to_dict,
 )
 from consentvid.validate import validate_in_repo, write_policy_errors
+from consentvid.versions import PDS_KIND
 
 # ------------------------------------------------------------ reporting ------
 
@@ -504,10 +506,10 @@ class _Rec:
 
     __slots__ = ("uri", "cid", "nsid", "raw", "view")
 
-    def __init__(self, uri, cid, nsid, raw):
+    def __init__(self, uri, cid, nsid, raw, did=None):
         self.uri, self.cid, self.nsid, self.raw = uri, cid, nsid, raw
         try:
-            self.view = versions.view(nsid, raw) if isinstance(raw, dict) else {}
+            self.view = versions.view(nsid, raw, did) if isinstance(raw, dict) else {}
         except Exception:  # noqa: BLE001 — malformed: callers validate raw
             self.view = {}
 
@@ -519,7 +521,7 @@ class _Rec:
 def _list_records(client: Client, did: str, nsids) -> list[_Rec]:
     """Every record in the given collections (both record versions)."""
     return [
-        _Rec(r.uri, str(r.cid), nsid, to_dict(r.value)) for nsid in nsids for r in _list_all(client, did, nsid)
+        _Rec(r.uri, str(r.cid), nsid, to_dict(r.value), did) for nsid in nsids for r in _list_all(client, did, nsid)
     ]
 
 
@@ -697,7 +699,7 @@ def _prepare_bytes(path: Path, kind: str, keep_metadata: bool, workdir: Path, po
     ffmpeg is required unless --keep-metadata."""
     from consentvid import media, storage
 
-    uploading = kind in storage.UPLOAD_KINDS and not pointer_given
+    uploading = (kind in storage.UPLOAD_KINDS or kind == PDS_KIND) and not pointer_given
     probe = media.probe(path)
     if keep_metadata:
         if probe is None:
@@ -800,6 +802,49 @@ def _bytes_shared(
 
 
 _PENDING_UPLOAD = "pending-upload"
+PDS_BLOB_MAX_SIZE = 300_000_000  # videoV2 #pdsBlobRef maxSize (Bluesky's video limit)
+_BLOB_UPLOAD_TIMEOUT = 900.0  # seconds: up to 300 MB on a slow uplink
+
+
+def _upload_pds_blob(client: Client, path: Path, ref: dict, mime: str) -> dict:
+    """Upload ``path`` to the user's own PDS (com.atproto.repo.uploadBlob)
+    and return the #pdsBlobRef storageRef for it. The PDS must store exactly
+    these bytes (same CID and size); its sniffed mimeType is kept (records
+    must carry the blob ref the PDS stores) but must name the same
+    container. An unreferenced blob is garbage-collected by the PDS, so a
+    failure afterwards leaves nothing to clean up."""
+    from atproto_client import models
+    from atproto_client.models.utils import get_response_model
+
+    from consentvid.records import same_container
+
+    data = path.read_bytes()
+    try:
+        resp = client.invoke_procedure(
+            "com.atproto.repo.uploadBlob",
+            data=data,
+            input_encoding=mime,
+            output_encoding="application/json",
+            timeout=_BLOB_UPLOAD_TIMEOUT,
+        )
+    except Exception as e:
+        from consentvid.identity import status_of
+
+        if status_of(e) == 413 or "toolarge" in str(e).lower().replace(" ", ""):
+            raise ConsentVidError(
+                f"your PDS refused a {len(data)}-byte blob as too large (some PDSes accept only a few MB); "
+                "use --storage-kind r2/ipfs/peertube instead"
+            ) from e
+        raise
+    blob = get_response_model(resp, models.ComAtprotoRepoUploadBlob.Response).blob
+    cid, got_mime, size = str(blob.cid), blob.mime_type, blob.size
+    if cid != ref["value"] or size != ref["size"]:
+        raise ConsentVidError(
+            f"the PDS stored different bytes than were sent (CID {cid}, {size} bytes); not registering"
+        )
+    if not same_container(got_mime, mime):
+        raise ConsentVidError(f"your PDS identified the file as {got_mime!r}, not {mime!r}; not registering")
+    return {**ref, "mimeType": got_mime}
 
 
 def _validation_view(record: dict) -> dict:
@@ -868,6 +913,8 @@ def _register_impl(
             "storage kind 'local': nobody else can fetch these bytes, so this clip "
             "can't appear in shared datasets. Use --storage-kind r2/ipfs/peertube/url."
         )
+    if kind == PDS_KIND and storage_value:
+        raise UsageError("--storage-kind pds uploads the file itself: drop --storage-value", param_hint="--storage-value")
     if kind == "url" and not storage_value:
         raise UsageError("--storage-kind url requires --storage-value https://...")
     if kind == "url" and not storage_value.startswith("https://"):
@@ -924,6 +971,26 @@ def _register_impl(
         uploading = kind in storage.UPLOAD_KINDS and not storage_value
         if uploading:
             record["storageRef"]["value"] = _PENDING_UPLOAD
+        if kind == PDS_KIND:
+            # The blob's CID and size are known before the upload (raw codec,
+            # sha-256), so the record validates exactly; only the blob's
+            # mimeType comes from the PDS's own sniffing, after the upload.
+            if not record.get("mimeType"):
+                raise UsageError(
+                    f"{video_path.name}: unknown video container; a PDS blob needs one of "
+                    + ", ".join(sorted({".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v"}))
+                )
+            if record["size"] > PDS_BLOB_MAX_SIZE:
+                raise UsageError(
+                    f"{video_path.name} is {record['size']} bytes; a PDS blob may be at most "
+                    f"{PDS_BLOB_MAX_SIZE} (300 MB). Use --storage-kind r2/ipfs/peertube for larger files."
+                )
+            record["storageRef"] = {
+                "kind": PDS_KIND,
+                "value": raw_cid_from_sha256(content_hash),
+                "mimeType": record["mimeType"],
+                "size": record["size"],
+            }
         # A client-chosen key (createRecord and applyWrites both take one), so
         # a write whose response is lost can be looked up afterwards.
         rkey = new_tid()
@@ -945,6 +1012,10 @@ def _register_impl(
                 record["storageRef"]["value"] = result.value
                 uploaded = result.created
                 _info(f"  -> {record['storageRef']['value']}")
+                _check_before_write(VIDEO_V2_NSID, versions.video_record_v2(record), did, rkey)
+            if kind == PDS_KIND:
+                _info("Uploading to your PDS ...")
+                record["storageRef"] = _upload_pds_blob(client, path, record["storageRef"], record["mimeType"])
                 _check_before_write(VIDEO_V2_NSID, versions.video_record_v2(record), did, rkey)
             if consent_for:
                 uri, cid, consent = _write_video_and_consent(client, did, rkey, record, consent_for, validate)
@@ -1352,7 +1423,7 @@ def _video_revoke_plan(client: Client, did: str, uri: str, rkey: str, video_nsid
     consent_nsid = CONSENT_FOR_VIDEO[video_nsid]
     head = str(client.com.atproto.sync.get_latest_commit({"did": did}).cid)
     raw = to_dict(client.com.atproto.repo.get_record({"repo": did, "collection": video_nsid, "rkey": rkey}).value)
-    video = versions.video_view(video_nsid, raw) if isinstance(raw, dict) else {}
+    video = versions.video_view(video_nsid, raw, did) if isinstance(raw, dict) else {}
     linked: dict[str, str] = {}
     # The sidecar (same record key), whatever its videoUri says: readers
     # ignore a mismatched one, but it would stay public as an orphan.
@@ -1458,6 +1529,22 @@ def _revoke(
         _info(f"Withdrawn: {c_uri}")
     _info(f"Deleted video record: {uri}")
     outcome = RevokeOutcome([u for u, _ in linked], uri)
+    if ref.get("kind") == PDS_KIND:
+        # A PDS blob lives while any record in the repo references it: with
+        # the video record gone, the PDS frees it unless another record still
+        # points at the same bytes.
+        other = _bytes_shared(client, did, ref, video.get("contentHash"), exclude_uri=uri)
+        if other:
+            outcome.bytes_note = f"your PDS keeps the video blob: another of your videos references it ({other})"
+            _warn(outcome.bytes_note)
+        else:
+            outcome.bytes_note = (
+                "your PDS deletes the video blob now that no ConsentVid record references it "
+                "(unless another record of yours, e.g. a Bluesky post of the same file, still does)"
+            )
+            outcome.bytes_deleted = True
+            _info(outcome.bytes_note)
+        return outcome
     if delete_bytes:
         other = _bytes_shared(client, did, ref, video.get("contentHash"), exclude_uri=uri)
         if other:

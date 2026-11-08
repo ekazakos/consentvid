@@ -74,3 +74,30 @@ def test_client_metadata_is_served_with_the_site():
     assert "atproto" in meta["scope"].split()
     for nsid in (VIDEO_V2_NSID, CONSENT_V2_NSID):
         assert f"repo:{nsid}?action=create&action=delete" in meta["scope"].split()
+
+
+def test_upload_vectors_are_pds_blobs(monkeypatch):
+    """'Upload from my computer' records (#pdsBlobRef): the blob is the
+    registered bytes, and the Python reader resolves it to this repo's PDS."""
+    from consentvid import bsky, storage
+
+    monkeypatch.setattr(bsky, "pds_of", lambda did: "https://pds.example")
+
+    uploads = [v for v in VECTORS if v["name"].startswith("upload")]
+    assert len(uploads) == 2
+    for vec in uploads:
+        video = vec["video"]
+        ref = versions.video_view(VIDEO_V2_NSID, video, vec["did"])["storageRef"]
+        assert ref["kind"] == "pds" and ref["value"] == video["contentHash"] and ref["size"] == video["size"]
+        assert video["storage"]["blob"]["ref"] == {"$link": video["contentHash"]}
+    everything = next(v for v in uploads if v["name"] == "upload-everything")["video"]
+    assert everything["title"] == "Garden walk"
+    assert everything["mimeType"] == "video/x-matroska" and everything["storage"]["blob"]["mimeType"] == "video/matroska"
+    url = storage.public_url(versions.video_view(VIDEO_V2_NSID, everything, uploads[0]["did"])["storageRef"])
+    assert url == f"https://pds.example/xrpc/com.atproto.sync.getBlob?did={uploads[0]['did']}&cid={everything['contentHash']}"
+
+
+def test_client_metadata_asks_for_video_blobs_only():
+    meta = json.loads((ROOT / "web/app/client-metadata.json").read_text())
+    blob_scopes = [s for s in meta["scope"].split() if s.startswith("blob")]
+    assert blob_scopes == ["blob:video/*"]

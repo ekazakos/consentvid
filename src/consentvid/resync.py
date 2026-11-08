@@ -92,7 +92,7 @@ from consentvid.records import (
 from consentvid.storage import public_url
 from consentvid.validate import validate_in_repo
 from consentvid.verify import fetch_verified
-from consentvid.versions import BSKY_KIND, consent_view, video_view
+from consentvid.versions import BSKY_KIND, PDS_KIND, consent_view, video_view
 from consentvid.vocab import PROVENANCE_ORDER, SENSITIVE_SELF_LABELS
 
 VALID = "valid"
@@ -588,6 +588,10 @@ def _url_matches(url: str, ref: dict) -> bool:
         from consentvid import bsky
 
         return bsky.url_matches(url, ref)
+    if kind == PDS_KIND:
+        from consentvid import bsky
+
+        return bsky.blob_url_matches(url, ref.get("did"), value)
     return False
 
 
@@ -869,7 +873,7 @@ def check(
     errors = validate_in_repo(video_nsid, video.value, consent_at.did, rkey=video_at.rkey)
     if errors:
         return done(INVALID, f"video record invalid: {errors[0]}", True)
-    v = video_view(video_nsid, video.value)
+    v = video_view(video_nsid, video.value, consent_at.did)
     if video.cid != c["videoCid"]:  # validate_in_repo requires videoCid
         return done(MODIFIED, "video record changed after consent was given", True)
     if item.video_cid and video.cid != item.video_cid:

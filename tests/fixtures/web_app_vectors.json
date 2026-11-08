@@ -488,5 +488,283 @@
         }
       ]
     }
+  },
+  {
+    "name": "upload-minimal",
+    "did": "did:plc:aliceaaaaaaaaaaaaaaaaaaa",
+    "rkey": "3mzrrcdrdgs2d",
+    "videoUri": "at://did:plc:aliceaaaaaaaaaaaaaaaaaaa/org.consentvid.videoV2/3mzrrcdrdgs2d",
+    "videoCid": "bafyreia4mxgwmjtl46dxojvemkmfmuqons2tenzgtgs6qhhr2mxniyv44m",
+    "video": {
+      "$type": "org.consentvid.videoV2",
+      "title": "Kitchen",
+      "contentHash": "bafkreibm6jg3ux5qumhcn2b3flc3tyu6dmlb4xa7u5bf44yegnrjhc4yeq",
+      "storage": {
+        "$type": "org.consentvid.videoV2#pdsBlobRef",
+        "blob": {
+          "$type": "blob",
+          "ref": {
+            "$link": "bafkreibm6jg3ux5qumhcn2b3flc3tyu6dmlb4xa7u5bf44yegnrjhc4yeq"
+          },
+          "mimeType": "video/mp4",
+          "size": 5
+        }
+      },
+      "createdAt": "2026-11-08T07:00:00.000Z",
+      "mimeType": "video/mp4",
+      "size": 5
+    },
+    "consent": {
+      "$type": "org.consentvid.consentV2",
+      "subject": {
+        "uri": "at://did:plc:aliceaaaaaaaaaaaaaaaaaaa/org.consentvid.videoV2/3mzrrcdrdgs2d",
+        "cid": "bafyreia4mxgwmjtl46dxojvemkmfmuqons2tenzgtgs6qhhr2mxniyv44m"
+      },
+      "modalities": [
+        "video",
+        "audio"
+      ],
+      "purposes": [
+        "training"
+      ],
+      "modelClasses": [
+        "academic"
+      ],
+      "compensation": "none",
+      "rightsBasis": "own-recording",
+      "captureProvenance": "self-attested",
+      "peoplePresent": "only-me",
+      "authorshipAttested": true,
+      "adultAttested": true,
+      "createdAt": "2026-11-08T07:00:00.000Z"
+    },
+    "body": {
+      "repo": "did:plc:aliceaaaaaaaaaaaaaaaaaaa",
+      "writes": [
+        {
+          "$type": "com.atproto.repo.applyWrites#create",
+          "collection": "org.consentvid.videoV2",
+          "rkey": "3mzrrcdrdgs2d",
+          "value": {
+            "$type": "org.consentvid.videoV2",
+            "title": "Kitchen",
+            "contentHash": "bafkreibm6jg3ux5qumhcn2b3flc3tyu6dmlb4xa7u5bf44yegnrjhc4yeq",
+            "storage": {
+              "$type": "org.consentvid.videoV2#pdsBlobRef",
+              "blob": {
+                "$type": "blob",
+                "ref": {
+                  "$link": "bafkreibm6jg3ux5qumhcn2b3flc3tyu6dmlb4xa7u5bf44yegnrjhc4yeq"
+                },
+                "mimeType": "video/mp4",
+                "size": 5
+              }
+            },
+            "createdAt": "2026-11-08T07:00:00.000Z",
+            "mimeType": "video/mp4",
+            "size": 5
+          }
+        },
+        {
+          "$type": "com.atproto.repo.applyWrites#create",
+          "collection": "org.consentvid.consentV2",
+          "rkey": "3mzrrcdrdgs2d",
+          "value": {
+            "$type": "org.consentvid.consentV2",
+            "subject": {
+              "uri": "at://did:plc:aliceaaaaaaaaaaaaaaaaaaa/org.consentvid.videoV2/3mzrrcdrdgs2d",
+              "cid": "bafyreia4mxgwmjtl46dxojvemkmfmuqons2tenzgtgs6qhhr2mxniyv44m"
+            },
+            "modalities": [
+              "video",
+              "audio"
+            ],
+            "purposes": [
+              "training"
+            ],
+            "modelClasses": [
+              "academic"
+            ],
+            "compensation": "none",
+            "rightsBasis": "own-recording",
+            "captureProvenance": "self-attested",
+            "peoplePresent": "only-me",
+            "authorshipAttested": true,
+            "adultAttested": true,
+            "createdAt": "2026-11-08T07:00:00.000Z"
+          }
+        }
+      ]
+    },
+    "withdraw": {
+      "repo": "did:plc:aliceaaaaaaaaaaaaaaaaaaa",
+      "writes": [
+        {
+          "$type": "com.atproto.repo.applyWrites#delete",
+          "collection": "org.consentvid.consentV2",
+          "rkey": "3mzrrcdrdgs2d"
+        },
+        {
+          "$type": "com.atproto.repo.applyWrites#delete",
+          "collection": "org.consentvid.videoV2",
+          "rkey": "3mzrrcdrdgs2d"
+        }
+      ]
+    }
+  },
+  {
+    "name": "upload-everything",
+    "did": "did:plc:aliceaaaaaaaaaaaaaaaaaaa",
+    "rkey": "3mzrrcdrdgs2e",
+    "videoUri": "at://did:plc:aliceaaaaaaaaaaaaaaaaaaa/org.consentvid.videoV2/3mzrrcdrdgs2e",
+    "videoCid": "bafyreiagd7wxuyxo2krsgxztqdkgrd3xm4zwektp6znibsfpqothpwyhsm",
+    "video": {
+      "$type": "org.consentvid.videoV2",
+      "title": "Garden walk",
+      "contentHash": "bafkreibm6jg3ux5qumhcn2b3flc3tyu6dmlb4xa7u5bf44yegnrjhc4yeq",
+      "storage": {
+        "$type": "org.consentvid.videoV2#pdsBlobRef",
+        "blob": {
+          "$type": "blob",
+          "ref": {
+            "$link": "bafkreibm6jg3ux5qumhcn2b3flc3tyu6dmlb4xa7u5bf44yegnrjhc4yeq"
+          },
+          "mimeType": "video/matroska",
+          "size": 5
+        }
+      },
+      "createdAt": "2026-11-08T07:00:00.000Z",
+      "description": "Filmed on a walk.",
+      "mimeType": "video/x-matroska",
+      "size": 5,
+      "durationMs": 5000,
+      "width": 1280,
+      "height": 720,
+      "tags": [
+        "outdoors"
+      ],
+      "labels": {
+        "$type": "com.atproto.label.defs#selfLabels",
+        "values": [
+          {
+            "val": "graphic-media"
+          }
+        ]
+      }
+    },
+    "consent": {
+      "$type": "org.consentvid.consentV2",
+      "subject": {
+        "uri": "at://did:plc:aliceaaaaaaaaaaaaaaaaaaa/org.consentvid.videoV2/3mzrrcdrdgs2e",
+        "cid": "bafyreiagd7wxuyxo2krsgxztqdkgrd3xm4zwektp6znibsfpqothpwyhsm"
+      },
+      "modalities": [
+        "video",
+        "audio"
+      ],
+      "purposes": [
+        "evaluation"
+      ],
+      "modelClasses": [
+        "academic",
+        "open-weights"
+      ],
+      "compensation": "none",
+      "rightsBasis": "own-recording",
+      "captureProvenance": "self-attested",
+      "peoplePresent": "only-me",
+      "authorshipAttested": true,
+      "adultAttested": true,
+      "createdAt": "2026-11-08T07:00:00.000Z"
+    },
+    "body": {
+      "repo": "did:plc:aliceaaaaaaaaaaaaaaaaaaa",
+      "writes": [
+        {
+          "$type": "com.atproto.repo.applyWrites#create",
+          "collection": "org.consentvid.videoV2",
+          "rkey": "3mzrrcdrdgs2e",
+          "value": {
+            "$type": "org.consentvid.videoV2",
+            "title": "Garden walk",
+            "contentHash": "bafkreibm6jg3ux5qumhcn2b3flc3tyu6dmlb4xa7u5bf44yegnrjhc4yeq",
+            "storage": {
+              "$type": "org.consentvid.videoV2#pdsBlobRef",
+              "blob": {
+                "$type": "blob",
+                "ref": {
+                  "$link": "bafkreibm6jg3ux5qumhcn2b3flc3tyu6dmlb4xa7u5bf44yegnrjhc4yeq"
+                },
+                "mimeType": "video/matroska",
+                "size": 5
+              }
+            },
+            "createdAt": "2026-11-08T07:00:00.000Z",
+            "description": "Filmed on a walk.",
+            "mimeType": "video/x-matroska",
+            "size": 5,
+            "durationMs": 5000,
+            "width": 1280,
+            "height": 720,
+            "tags": [
+              "outdoors"
+            ],
+            "labels": {
+              "$type": "com.atproto.label.defs#selfLabels",
+              "values": [
+                {
+                  "val": "graphic-media"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "$type": "com.atproto.repo.applyWrites#create",
+          "collection": "org.consentvid.consentV2",
+          "rkey": "3mzrrcdrdgs2e",
+          "value": {
+            "$type": "org.consentvid.consentV2",
+            "subject": {
+              "uri": "at://did:plc:aliceaaaaaaaaaaaaaaaaaaa/org.consentvid.videoV2/3mzrrcdrdgs2e",
+              "cid": "bafyreiagd7wxuyxo2krsgxztqdkgrd3xm4zwektp6znibsfpqothpwyhsm"
+            },
+            "modalities": [
+              "video",
+              "audio"
+            ],
+            "purposes": [
+              "evaluation"
+            ],
+            "modelClasses": [
+              "academic",
+              "open-weights"
+            ],
+            "compensation": "none",
+            "rightsBasis": "own-recording",
+            "captureProvenance": "self-attested",
+            "peoplePresent": "only-me",
+            "authorshipAttested": true,
+            "adultAttested": true,
+            "createdAt": "2026-11-08T07:00:00.000Z"
+          }
+        }
+      ]
+    },
+    "withdraw": {
+      "repo": "did:plc:aliceaaaaaaaaaaaaaaaaaaa",
+      "writes": [
+        {
+          "$type": "com.atproto.repo.applyWrites#delete",
+          "collection": "org.consentvid.consentV2",
+          "rkey": "3mzrrcdrdgs2e"
+        },
+        {
+          "$type": "com.atproto.repo.applyWrites#delete",
+          "collection": "org.consentvid.videoV2",
+          "rkey": "3mzrrcdrdgs2e"
+        }
+      ]
+    }
   }
 ]

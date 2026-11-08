@@ -2,7 +2,7 @@
 // their outputs to tests/fixtures/web_app_vectors.json; the Python suite
 // (tests/test_web_app.py) validates them with the Python validators and CID
 // code, and test/vectors.test.js checks the file is current.
-import { buildContribution, withdrawBody } from '../src/records.js'
+import { buildContribution, buildUploadContribution, withdrawBody } from '../src/records.js'
 
 export const DID = 'did:plc:aliceaaaaaaaaaaaaaaaaaaa'
 const BLOB = 'bafkreifwkq2hesfskgekpkjbmih2ityaslss3rvd5wsmdytyl2pkdjxu7m'
@@ -79,6 +79,31 @@ export const CASES = [
   },
 ]
 
+// "Upload from my computer": a blob in the user's own PDS (#pdsBlobRef).
+const UPLOAD_BLOB = 'bafkreibm6jg3ux5qumhcn2b3flc3tyu6dmlb4xa7u5bf44yegnrjhc4yeq' // sha-256 of 'hello'
+export const UPLOAD_CASES = [
+  {
+    name: 'upload-minimal',
+    rkey: '3mzrrcdrdgs2d',
+    video: { title: 'Kitchen', mimeType: 'video/mp4', blob: { cid: UPLOAD_BLOB, mimeType: 'video/mp4', size: 5 } },
+    terms: BASE_TERMS,
+  },
+  {
+    name: 'upload-everything',
+    rkey: '3mzrrcdrdgs2e',
+    video: {
+      title: ' Garden\u200b walk ',
+      description: 'Filmed on a walk.',
+      tags: ['outdoors'],
+      labels: ['graphic-media'],
+      mimeType: 'video/x-matroska',
+      blob: { cid: UPLOAD_BLOB, mimeType: 'video/matroska', size: 5 },
+      probe: { width: 1280, height: 720, durationMs: 5000 },
+    },
+    terms: { ...BASE_TERMS, purposes: ['evaluation'], modelClasses: ['academic', 'open-weights'] },
+  },
+]
+
 export async function makeVectors() {
   const out = []
   for (const c of CASES) {
@@ -97,6 +122,26 @@ export async function makeVectors() {
       did: DID,
       rkey: c.rkey,
       post: c.post,
+      videoUri: built.videoUri,
+      videoCid: built.videoCid,
+      video: built.video,
+      consent: built.consent,
+      body: built.body,
+      withdraw: withdrawBody(DID, c.rkey),
+    })
+  }
+  for (const c of UPLOAD_CASES) {
+    const built = await buildUploadContribution({
+      did: DID,
+      rkey: c.rkey,
+      video: c.video,
+      terms: c.terms,
+      createdAt: '2026-11-08T07:00:00.000Z',
+    })
+    out.push({
+      name: c.name,
+      did: DID,
+      rkey: c.rkey,
       videoUri: built.videoUri,
       videoCid: built.videoCid,
       video: built.video,

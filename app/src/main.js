@@ -1,25 +1,34 @@
 // The consent web app (https://consentvid.org/app/). Signs in with atproto
 // OAuth, lists the user's Bluesky video posts, and writes videoV2 (pointing
 // at the post: #bskyPostRef) + consentV2 records to the user's own repo in
-// one applyWrites commit per video. Everything runs in the browser: no
-// ConsentVid server sees a token or a video.
+// one applyWrites commit per video. "Upload from my computer" strips the
+// file's identifying metadata in the browser (MP4/MOV), uploads it as a blob
+// to the user's own PDS (no post) and writes videoV2 (#pdsBlobRef) +
+// consentV2 the same way. Everything runs in the browser: no ConsentVid
+// server sees a token or a video.
 
 import { BrowserOAuthClient, buildAtprotoLoopbackClientMetadata } from '@atproto/oauth-client-browser'
 
 import clientMetadata from '../../web/app/client-metadata.json' with { type: 'json' }
 import { decideTraining, isBotProfile, scanMetadata } from './gates.js'
+import { Mp4Error, isMp4, stripMp4 } from './mp4strip.js'
 import {
   AI_PREF_NSID,
   CONSENT_NSID,
   OFFERED_PROVENANCE,
+  PDS_BLOB_MAX_SIZE,
   POST_NSID,
   PROFILE_NSID,
   SENSITIVE_SELF_LABELS,
+  VIDEO_MIME_TYPES,
   VIDEO_NSID,
   VOCAB,
   buildContribution,
+  buildUploadContribution,
+  cleanLine,
   defaultTitle,
   expiryFrom,
+  mimeForName,
   newTid,
   parseAtUri,
   parsePostParam,
@@ -105,6 +114,8 @@ const state = {
   postCursor: null,
   postsDone: false,
   contributions: new Map(), // post at-uri -> {rkey, video, consent}
+  others: [], // contributions not tied to a post (uploads, CLI): {rkey, video, consent}
+  files: [], // queued uploads: {id, file, title, status}
   selected: new Set(),
   trainingDenied: null,
   deepLink: null,
@@ -226,12 +237,15 @@ async function loadAccount() {
   const [videos, consents] = await Promise.all([listAll(VIDEO_NSID), listAll(CONSENT_NSID)])
   const consentByKey = new Map(consents.map((r) => [parseAtUri(r.uri)?.rkey, r]))
   state.contributions.clear()
+  state.others = []
   for (const v of videos) {
     const storage = v.value && v.value.storage
     const postUri = storage && storage.post && storage.post.uri
     const rkey = parseAtUri(v.uri)?.rkey
-    if (!postUri || !rkey) continue
-    state.contributions.set(postUri, { rkey, video: v, consent: consentByKey.get(rkey) || null })
+    if (!rkey) continue
+    const entry = { rkey, video: v, consent: consentByKey.get(rkey) || null }
+    if (postUri) state.contributions.set(postUri, entry)
+    else state.others.push(entry)
   }
   return true
 }
@@ -371,6 +385,118 @@ function renderPosts() {
   $('more').hidden = state.postsDone
 }
 
+function renderOthers() {
+  const list = $('others')
+  list.replaceChildren(
+    ...state.others.map((entry) => {
+      const v = entry.video.value || {}
+      const kind = (v.storage && v.storage.$type ? v.storage.$type.split('#')[1] : '') || ''
+      return el(
+        'li',
+        { class: 'post' },
+        el(
+          'button',
+          { class: 'btn danger small', type: 'button', onclick: (e) => withdrawOther(entry, e.currentTarget) },
+          'Withdraw',
+        ),
+        el('div', { class: 'thumb', 'aria-hidden': 'true' }),
+        el(
+          'div',
+          { class: 'meta' },
+          el('span', { class: 'text' }, v.title || '(untitled)'),
+          el('span', { class: 'date' }, (v.createdAt || '').slice(0, 10)),
+          el(
+            'span',
+            { class: 'state' },
+            `${kind === 'pdsBlobRef' ? ' · uploaded' : ''}${entry.consent ? ' · in ConsentVid' : ' · registered, no consent'}`,
+          ),
+        ),
+      )
+    }),
+  )
+  $('others-card').hidden = state.others.length === 0
+}
+
+function mb(n) {
+  return `${(n / 1e6).toFixed(n < 1e7 ? 1 : 0)} MB`
+}
+
+function fileProblem(file) {
+  if (file.size > PDS_BLOB_MAX_SIZE) return `larger than ${mb(PDS_BLOB_MAX_SIZE)}`
+  if (!uploadMime(file)) return 'not a video file this page can upload (MP4, MOV, WebM, MKV, AVI, MPEG)'
+  return null
+}
+
+function uploadMime(file) {
+  const byName = mimeForName(file.name)
+  if (byName) return byName
+  return VIDEO_MIME_TYPES.includes(file.type) ? file.type : null
+}
+
+let fileIds = 0
+function addFiles(files) {
+  for (const file of files) {
+    const problem = fileProblem(file)
+    state.files.push({ id: ++fileIds, file, title: '', status: problem ? `Can't upload: ${problem}.` : '', bad: Boolean(problem) })
+  }
+  renderFiles()
+  update()
+}
+
+function renderFiles() {
+  const list = $('files')
+  list.replaceChildren(
+    ...state.files.map((f) =>
+      el(
+        'li',
+        { class: `file${f.bad ? ' bad' : ''}` },
+        el('div', { class: 'meta' },
+          // The file name is shown here only: it is never published (camera
+          // file names leak the capture time and device).
+          el('span', { class: 'text' }, `${f.file.name} · ${mb(f.file.size)}`),
+          f.bad
+            ? null
+            : el('label', {}, 'Title (published) ',
+                el('input', {
+                  type: 'text',
+                  value: f.title,
+                  maxlength: '300',
+                  required: true,
+                  placeholder: 'e.g. Making pasta at home',
+                  oninput: (e) => {
+                    f.title = e.target.value
+                    update()
+                  },
+                })),
+          f.status ? el('span', { class: 'status', role: 'status' }, f.status) : null,
+          f.busy ? el('progress', { 'aria-label': `Working on ${f.file.name}` }) : null,
+        ),
+        f.busy
+          ? null
+          : el('button', {
+              class: 'btn ghost small',
+              type: 'button',
+              onclick: () => {
+                state.files = state.files.filter((x) => x !== f)
+                renderFiles()
+                update()
+              },
+            }, 'Remove'),
+      ),
+    ),
+  )
+}
+
+function setFile(f, status, busy = false) {
+  f.status = status
+  f.busy = busy
+  renderFiles()
+}
+
+function readyFiles() {
+  return state.files.filter((f) => !f.bad && !f.done)
+}
+
 function readTerms() {
   const checked = (field) => [...document.querySelectorAll(`input[name="${field}"]:checked`)].map((i) => i.value)
   return {
@@ -408,8 +534,10 @@ function update() {
   const errors = [...termsErrors(terms), ...videoErrors(details)]
   if (state.trainingDenied && terms.purposes.includes('training'))
     errors.push('Your AI-usage preference denies training.')
-  if (!state.selected.size) errors.unshift('Choose at least one video.')
-  const n = state.selected.size
+  const files = readyFiles()
+  if (files.some((f) => !cleanLine(f.title))) errors.push('Give every uploaded video a title.')
+  if (!state.selected.size && !files.length) errors.unshift('Choose at least one video.')
+  const n = state.selected.size + files.length
   const summary = $('summary')
   if (n && terms.modalities.length && terms.purposes.length && terms.modelClasses.length && terms.peoplePresent) {
     const expiry = terms.expiresAt ? `until ${terms.expiresAt.slice(0, 10)}` : 'until you withdraw it'
@@ -424,8 +552,9 @@ function update() {
       el(
         'p',
         {},
-        'Anything you did not tick is not granted. You can withdraw on this page at any time; deleting the post on ' +
-          'Bluesky also removes the video from every dataset.',
+        'Anything you did not tick is not granted. You can withdraw on this page at any time: withdrawing (or ' +
+          'deleting the post on Bluesky) removes the video from every dataset, and an uploaded file is deleted from ' +
+          'your server.',
       ),
     )
   } else {
@@ -509,6 +638,116 @@ async function contributeOne(post, terms, details) {
   log(`“${label}”: consent signed.`, 'ok')
 }
 
+async function uploadBlob(bytes, mimeType) {
+  const res = await state.session.fetchHandler('/xrpc/com.atproto.repo.uploadBlob', {
+    method: 'POST',
+    headers: { 'content-type': mimeType },
+    body: bytes,
+  })
+  if (!res.ok) {
+    let err = {}
+    try {
+      err = await res.json()
+    } catch {
+      /* not JSON */
+    }
+    if (res.status === 413 || /too ?large/i.test(`${err.error} ${err.message}`)) {
+      throw new Error('your server refused the file as too large (some servers accept only a few MB)')
+    }
+    throw new XrpcError(res.status, err.error, err.message)
+  }
+  const out = await res.json()
+  const b = out && out.blob
+  const cid = b && b.ref && b.ref.$link
+  if (!cid || !Number.isInteger(b.size)) throw new Error('your server answered the upload without a blob reference')
+  return { cid, mimeType: b.mimeType, size: b.size }
+}
+
+async function contributeFile(f, terms, details) {
+  const mime = uploadMime(f.file)
+  setFile(f, 'Reading the file…', true)
+  let bytes = new Uint8Array(await f.file.arrayBuffer())
+  const original = await probe(bytes, mime)
+  if (isMp4(bytes)) {
+    setFile(f, 'Removing identifying metadata (no re-encoding)…', true)
+    try {
+      const stripped = stripMp4(bytes)
+      bytes = stripped.bytes
+      log(`“${cleanLine(f.title)}”: removed ${stripped.removed.join(', ')}.`)
+    } catch (e) {
+      if (!(e instanceof Mp4Error)) throw e
+      if (!$('keep-metadata').checked) {
+        $('keep-metadata-row').hidden = false
+        throw new Error(`its metadata can't be removed in the browser (${e.message}); use the consentvid command-line tool, or tick “include anyway”`)
+      }
+    }
+  } else if (!$('keep-metadata').checked) {
+    // WebM, Matroska, AVI, MPEG: the browser can't rewrite these containers.
+    $('keep-metadata-row').hidden = false
+    throw new Error(
+      'only MP4 and MOV files can be cleaned of identifying metadata in the browser. Convert it to MP4, use the ' +
+        'consentvid command-line tool, or tick “include anyway”',
+    )
+  }
+  const found = scanMetadata(bytes)
+  if (found.length && !$('keep-metadata').checked) {
+    $('keep-metadata-row').hidden = false
+    throw new Error(`the file still carries identifying metadata (${found.join(', ')}); tick “include anyway” to upload it`)
+  }
+  const measured = await probe(bytes, mime)
+  if (original.width && !measured.width) throw new Error('the cleaned file no longer plays; nothing was uploaded')
+  const cid = await rawCid(bytes)
+  setFile(f, `Uploading ${mb(bytes.length)} to your server…`, true)
+  const blob = await uploadBlob(bytes, mime)
+  if (blob.cid !== cid || blob.size !== bytes.length) throw new Error('your server stored different bytes than were sent')
+  setFile(f, 'Signing…', true)
+  const rkey = newTid()
+  const createdAt = new Date().toISOString()
+  const c = await buildUploadContribution({
+    did: state.did,
+    rkey,
+    video: { title: f.title, mimeType: mime, blob, tags: details.tags, labels: details.labels, probe: measured },
+    terms,
+    createdAt,
+  })
+  // The blob is referenced from here on; an unreferenced blob is deleted by
+  // the server after a while, so a failure below leaves nothing behind.
+  const out = await (await xrpc('com.atproto.repo.applyWrites', { body: c.body })).json()
+  const stored = out && out.results && out.results[0] && out.results[0].cid
+  if (stored && stored !== c.videoCid) {
+    await xrpc('com.atproto.repo.applyWrites', { body: withdrawBody(state.did, rkey) })
+    throw new Error('your server stored the record differently than expected; nothing was kept')
+  }
+  state.others.unshift({
+    rkey,
+    video: { uri: c.videoUri, value: c.video },
+    consent: { uri: `at://${state.did}/${CONSENT_NSID}/${rkey}`, value: c.consent },
+  })
+  f.done = true
+  setFile(f, 'Uploaded and consent signed.')
+  log(`“${c.video.title}”: uploaded and consent signed.`, 'ok')
+}
+
+async function withdrawOther(entry, button) {
+  if (button.dataset.confirm !== 'yes') {
+    button.dataset.confirm = 'yes'
+    button.textContent = 'Confirm withdraw'
+    return
+  }
+  button.disabled = true
+  try {
+    await xrpc('com.atproto.repo.applyWrites', {
+      body: withdrawBody(state.did, entry.rkey, { consentExists: Boolean(entry.consent) }),
+    })
+    state.others = state.others.filter((x) => x !== entry)
+    log('Consent withdrawn: the video is out of ConsentVid, and your server deletes an uploaded file.', 'ok')
+  } catch (e) {
+    log(`Withdrawing failed — ${e.message}`, 'bad')
+  }
+  renderOthers()
+  update()
+}
+
 async function signSelected() {
   const terms = readTerms()
   const details = readVideoDetails()
@@ -522,7 +761,18 @@ async function signSelected() {
       log(`“${(post.value.text || '').trim().slice(0, 40) || post.uri}”: not signed — ${e.message}`, 'bad')
     }
   }
+  for (const f of readyFiles()) {
+    try {
+      await contributeFile(f, terms, details)
+    } catch (e) {
+      setFile(f, `Not uploaded: ${e.message}.`)
+      log(`“${cleanLine(f.title) || 'upload'}”: not uploaded — ${e.message}`, 'bad')
+    }
+  }
+  state.files = state.files.filter((f) => !f.done)
   renderPosts()
+  renderOthers()
+  renderFiles()
   update()
 }
 
@@ -625,7 +875,33 @@ async function main() {
   }
   renderChoices()
   renderPosts()
+  renderOthers()
+  renderFiles()
   $('contribute').hidden = false
+  for (const tab of document.querySelectorAll('[role="tab"]')) {
+    tab.addEventListener('click', () => {
+      for (const t of document.querySelectorAll('[role="tab"]')) {
+        const on = t === tab
+        t.setAttribute('aria-selected', String(on))
+        $(t.getAttribute('aria-controls')).hidden = !on
+      }
+    })
+  }
+  $('file').addEventListener('change', (e) => {
+    addFiles([...e.target.files])
+    e.target.value = ''
+  })
+  const drop = $('drop')
+  drop.addEventListener('dragover', (e) => {
+    e.preventDefault()
+    drop.classList.add('over')
+  })
+  drop.addEventListener('dragleave', () => drop.classList.remove('over'))
+  drop.addEventListener('drop', (e) => {
+    e.preventDefault()
+    drop.classList.remove('over')
+    addFiles([...(e.dataTransfer?.files || [])])
+  })
   $('terms').addEventListener('input', update)
   $('more').addEventListener('click', async () => {
     $('more').disabled = true

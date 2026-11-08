@@ -73,10 +73,22 @@ export const TID_RE = /^[234567abcdefghij][234567abcdefghijklmnopqrstuvwxyz]{12}
 
 // ------------------------------------------------------------------ CIDs --
 
+/** A record in atproto JSON form as IPLD data: {"$link": cid} becomes a CID
+ * link (a blob ref's `ref`), everything else stays as it is. */
+export function toIpld(value) {
+  if (Array.isArray(value)) return value.map(toIpld)
+  if (value && typeof value === 'object') {
+    const keys = Object.keys(value)
+    if (keys.length === 1 && keys[0] === '$link' && typeof value.$link === 'string') return CID.parse(value.$link)
+    return Object.fromEntries(keys.map((k) => [k, toIpld(value[k])]))
+  }
+  return value
+}
+
 /** The CID a PDS assigns to a record (CIDv1, dag-cbor, sha-256, base32).
- * Our records hold only strings, integers, booleans, arrays and objects. */
+ * The record is given in atproto JSON form (blob refs as {"$link": ...}). */
 export async function recordCid(record) {
-  const bytes = dagCbor.encode(record)
+  const bytes = dagCbor.encode(toIpld(record))
   const digest = await sha256.digest(bytes)
   return CID.createV1(dagCbor.code, digest).toString()
 }
@@ -239,6 +251,81 @@ export function videoRecord({ postUri, postCid, post, title, description, tags, 
   return rec
 }
 
+// ------------------------------------------------- uploads (PDS blobs) --
+
+/** videoV2 #pdsBlobRef maxSize: Bluesky's video limit (social-app
+ * VIDEO_MAX_SIZE, 300 MB). A PDS may accept less. */
+export const PDS_BLOB_MAX_SIZE = videoLexicon.defs.pdsBlobRef.properties.blob.maxSize
+
+// File extension -> the mimeType writers use (records.mime_for).
+const MIME_BY_SUFFIX = {
+  mp4: 'video/mp4',
+  m4v: 'video/mp4',
+  mov: 'video/quicktime',
+  webm: 'video/webm',
+  mkv: 'video/x-matroska',
+  avi: 'video/x-msvideo',
+  mpg: 'video/mpeg',
+  mpeg: 'video/mpeg',
+  ts: 'video/mp2t',
+  '3gp': 'video/3gpp',
+}
+
+export function mimeForName(name) {
+  const m = /\.([a-z0-9]+)$/i.exec(String(name || ''))
+  return (m && MIME_BY_SUFFIX[m[1].toLowerCase()]) || null
+}
+
+// Container types that name the same format (records.same_container): a PDS
+// stores the type its own sniffing reports (video/matroska), writers use the
+// x- spellings.
+const MIME_CLASSES = [
+  ['video/matroska', 'video/x-matroska'],
+  ['video/vnd.avi', 'video/x-msvideo', 'video/avi', 'video/msvideo'],
+  ['video/mp4', 'video/x-m4v'],
+  ['video/mpeg', 'video/MP1S', 'video/MP2P'],
+]
+
+export function sameContainer(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false
+  a = a.split(';')[0].trim()
+  b = b.split(';')[0].trim()
+  if (a.toLowerCase() === b.toLowerCase()) return true
+  return MIME_CLASSES.some((cls) => cls.includes(a) && cls.includes(b))
+}
+
+/** The org.consentvid.videoV2 record for a file uploaded as a blob to the
+ * user's own PDS. `blob` = {cid, mimeType, size} as uploadBlob returned it;
+ * `mimeType` = the file's container type (mimeForName). */
+export function uploadVideoRecord({ blob, mimeType, title, description, tags, labels, probe, createdAt }) {
+  const t = cleanLine(title || '')
+  if (!t) throw new Error('a title is required')
+  if (!isRawSha256Cid(blob.cid)) throw new Error('the blob is not a raw sha-256 CID')
+  if (!VIDEO_MIME_TYPES.includes(mimeType)) throw new Error(`unsupported video type ${mimeType}`)
+  if (!sameContainer(mimeType, blob.mimeType)) throw new Error(`the server identified the file as ${blob.mimeType}`)
+  const rec = {
+    $type: VIDEO_NSID,
+    title: t,
+    contentHash: blob.cid,
+    storage: {
+      $type: `${VIDEO_NSID}#pdsBlobRef`,
+      blob: { $type: 'blob', ref: { $link: blob.cid }, mimeType: blob.mimeType, size: blob.size },
+    },
+    createdAt,
+  }
+  if (description) rec.description = description
+  rec.mimeType = mimeType
+  rec.size = blob.size
+  for (const [k, v] of Object.entries({ durationMs: probe?.durationMs, width: probe?.width, height: probe?.height })) {
+    if (Number.isInteger(v) && v >= 0) rec[k] = v
+  }
+  const tg = [...new Set((tags || []).map((x) => x.trim()).filter(Boolean))]
+  if (tg.length) rec.tags = tg
+  const l = [...new Set(labels || [])].filter((x) => SENSITIVE_SELF_LABELS.includes(x))
+  if (l.length) rec.labels = { $type: SELF_LABELS_TYPE, values: l.map((val) => ({ val })) }
+  return rec
+}
+
 /** The org.consentvid.consentV2 record (kebab-case vocabulary). */
 export function consentRecord({ videoUri, videoCid, terms, createdAt }) {
   const rec = {
@@ -289,6 +376,27 @@ export function termsErrors(terms) {
 export async function buildContribution({ did, rkey, postUri, postCid, post, video, terms, createdAt }) {
   const videoUri = `at://${did}/${VIDEO_NSID}/${rkey}`
   const v = videoRecord({ postUri, postCid, post, createdAt, ...video })
+  const videoCid = await recordCid(v)
+  const c = consentRecord({ videoUri, videoCid, terms, createdAt })
+  return {
+    videoUri,
+    videoCid,
+    video: v,
+    consent: c,
+    body: {
+      repo: did,
+      writes: [
+        { $type: 'com.atproto.repo.applyWrites#create', collection: VIDEO_NSID, rkey, value: v },
+        { $type: 'com.atproto.repo.applyWrites#create', collection: CONSENT_NSID, rkey, value: c },
+      ],
+    },
+  }
+}
+
+/** Like buildContribution, for an uploaded file (uploadVideoRecord). */
+export async function buildUploadContribution({ did, rkey, video, terms, createdAt }) {
+  const videoUri = `at://${did}/${VIDEO_NSID}/${rkey}`
+  const v = uploadVideoRecord({ createdAt, ...video })
   const videoCid = await recordCid(v)
   const c = consentRecord({ videoUri, videoCid, terms, createdAt })
   return {

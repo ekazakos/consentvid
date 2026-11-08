@@ -23,3 +23,6 @@ STUDY.md
 # workflow from app/ with `npm ci && npm run build`).
 app/node_modules/
 web/app/app.js
+
+# Finder/iCloud conflict copies ("name 2.ext")
+* [0-9].*

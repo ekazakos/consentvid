@@ -80,39 +80,42 @@ V1 ones only within the evolution rules.
   equal `contentHash`, and the post, read with a proof at `post.cid`, to embed
   that blob (`consentvid.bsky`; README, "Storage backends"). Readers that
   predate it treat such clips as unreachable, as for any unknown member.
+- **`#pdsBlobRef`** (storage union member, added 2026-11-08, was R1-27):
+  `{blob: {type: "blob", accept: ["video/*"], maxSize: 300000000}}`, a blob
+  in the contributor's own PDS with no post (the web app's "Upload from my
+  computer", `--storage-kind pds`). `maxSize` is Bluesky's video limit
+  (social-app `VIDEO_MAX_SIZE`, 300 MB; the PDS installer sets
+  `PDS_BLOB_UPLOAD_LIMIT=314572800`, the reference PDS defaults to 5 MiB, so
+  a PDS may refuse less). Readers (`validate._pds_blob_rules`,
+  `validate._validate_blob`) check:
+  - `blob.ref` equals `contentHash` (the raw-codec CID), and `blob.size`
+    equals `size`, or the blob doesn't bind to the consent;
+  - `blob.mimeType` names the same container as `mimeType`, through an
+    alias table (`records.same_container`), not string equality: the PDS
+    stores the type its file-type sniffing reports and requires blob refs to
+    match it exactly, so a `.mkv` upload comes back as `video/matroska`, an
+    `.avi` as `video/vnd.avi`. Equivalent: {`video/matroska`,
+    `video/x-matroska`}, {`video/vnd.avi`, `video/x-msvideo`}, {`video/x-m4v`,
+    `video/mp4`}, {`video/MP1S`, `video/MP2P`, `video/mpeg`}. Writers copy
+    the blob's `mimeType` from the `uploadBlob` response;
+  - `accept` and `maxSize`: the PDS does **not** enforce them for lexicons
+    it doesn't know (it validates only its bundled lexicons), so readers do;
+  - the blob is served by the record's own repo (`getBlob?did=<repo>&cid=`),
+    so no cross-repo reference is possible.
+  Writers send the `applyWrites` that references the blob right after the
+  upload (the PDS garbage-collects unreferenced blobs after a grace period,
+  at least an hour on the reference PDS). Deleting the record frees the blob
+  only when no other record in the repo references the same CID (the PDS
+  tracks references from records of any lexicon), so `revoke` warns when
+  another ConsentVid record still does. Blob lifetime is tied to the
+  account (deleted with it, unavailable while it is deactivated or taken
+  down): see the README's storage notes.
 
 ## Possible compatible additions
 
 These fit the evolution rules (`compat_errors` accepts them), so they can be
 added to `org.consentvid.videoV2` without a new NSID. Not scheduled.
 
-- **An optional PDS-blob storage kind** (R1-27, deferred): a new storage
-  union member (e.g. `#blobRef {blob: {type: "blob", accept: ["video/*"],
-  maxSize: ...}}`). Readers treat unknown members as unreachable, so today's
-  readers ignore it safely. Readers that support it must check:
-  - `blob.ref` equals `contentHash` (in V2 already the raw-codec CID), and
-    `blob.size` equals `size`, or the blob doesn't bind to the consent;
-  - `blob.mimeType` is equivalent to `mimeType`, through an alias table, not
-    string equality: the PDS stores the type its file-type sniffing reports
-    and requires blob refs to match it exactly, so a `.mkv` upload comes back
-    as `video/matroska`, an `.avi` as `video/vnd.avi`. Equivalent pairs:
-    {`video/matroska`, `video/x-matroska`}, {`video/vnd.avi`,
-    `video/x-msvideo`}, {`video/x-m4v`, `video/mp4`}, {`video/MP1S`,
-    `video/MP2P`, `video/mpeg`}. (Readers already accept `video/matroska` and
-    `video/vnd.avi` as `mimeType`.) The writer copies `mimeType` from the
-    `uploadBlob` response, not from the file name;
-  - `accept` and `maxSize`: the PDS does **not** enforce them for lexicons it
-    doesn't know (it validates only its bundled lexicons), so ConsentVid
-    readers must;
-  - the `applyWrites` that references the blob follows the upload promptly:
-    the PDS garbage-collects unreferenced blobs after a grace period (at
-    least an hour on the reference PDS);
-  - deleting a record frees the blob only when no other record in the repo
-    references the same CID (the PDS tracks references from records of any
-    lexicon), so `revoke` should warn when another record still references
-    it. Blob lifetime is tied to the account (deleted with it, unavailable
-    while it is deactivated or taken down): see the README's "Why not PDS
-    blobs?".
 - **Permissioned data (atproto Spaces).** Consent records stay public on
   purpose: anyone can verify them with MST proofs, and relays make them
   discoverable. Spaces are alpha

@@ -57,8 +57,9 @@ consentvid revoke <video-uri> --delete-bytes      # withdraw everything (one com
 
 Open **[consentvid.org/app](https://consentvid.org/app/)**, sign in with your
 Bluesky account (atproto OAuth: you approve on your own server, and the app
-may only create and delete `org.consentvid.videoV2` / `consentV2` records),
-tick your video posts, choose your terms and sign. Or from the CLI:
+may only create and delete `org.consentvid.videoV2` / `consentV2` records and
+upload video blobs, `blob:video/*`), tick your video posts, choose your terms
+and sign. Or from the CLI:
 
 ```bash
 consentvid contribute --from-post https://bsky.app/profile/you.bsky.social/post/3abc... \
@@ -80,6 +81,23 @@ and post a stripped copy instead. The title defaults to the post's first
 line, the languages to the post's. The same account checks apply as for
 `contribute`: no consent from accounts with the `bot` self-label, and no
 `training` if your `community.lexicon.preference.ai` denies it.
+
+### A video file from your computer (without posting it)
+
+In the app, **Upload from my computer**: choose or drop files (up to 300 MB
+each; some PDSes accept less), give each a title (published; file names are
+never published), choose your terms and sign. Your browser removes
+identifying metadata first, without re-encoding: for MP4 and MOV it keeps
+only the video and sound tracks, drops `udta`/`meta`/XMP/vendor boxes and
+every other track (GPS and telemetry tracks' samples are zeroed), zeroes
+creation times and blanks handler and encoder names, then checks the result
+still plays. WebM, MKV and AVI can't be rewritten in the browser: convert to
+MP4, use the CLI (ffmpeg strips them), or tick "include anyway". The file is
+then uploaded as a blob to **your own** PDS (`com.atproto.repo.uploadBlob`;
+nothing is posted) and referenced by the video record (`#pdsBlobRef`) in the
+same one-commit write as its consent. Withdrawing deletes the record, and the
+PDS deletes the blob. From the CLI: `consentvid contribute clip.mp4 --title
+"…" --storage-kind pds …` (ffmpeg strips it first).
 
 `login` finds your PDS from your handle (handle → DID → DID document → PDS
 endpoint, as goat and the reference clients do), so your app password is only
@@ -370,9 +388,12 @@ and names the registered bytes (by sha256) to train on instead.
 | `peertube` | yes | uploaded **unlisted** by default; served renditions are transcodes, so they won't match `contentHash` |
 | `url` | your responsibility | must be `https://` |
 | `bsky` (`#bskyPostRef`, V2 only) | yes: delete the post (or withdraw) | the video blob of **your own** Bluesky post, served by your PDS; readers check the post (with a proof) still exists at the pinned CID and embeds the blob, and the blob CID equals `contentHash`. `contentUrl` is the getBlob URL; any public host serving getBlob for the same DID and CID is accepted (PDS migration). Written by the web app and `contribute --from-post` |
+| `pds` (`#pdsBlobRef`, V2 only) | yes: withdrawing deletes the record, and the PDS then frees the blob | a blob in **your own** PDS, uploaded with `com.atproto.repo.uploadBlob` and referenced by the video record only (no post, nothing in your feed). Up to 300 MB (`maxSize`; Bluesky's video limit), but a PDS may accept less (the reference PDS defaults to 5 MiB). Readers require `blob.ref` = `contentHash`, `blob.size` = `size` and the same container type (`video/matroska` = `video/x-matroska`, …). `contentUrl` is the getBlob URL. Written by the web app's "Upload from my computer" and `--storage-kind pds` / `storage="pds"`. Unavailable while the account is deactivated, deleted with it |
 | `local` | n/a | `<contentHash>.<ext>` (never your file name, which can carry the capture time and device); never dereferenceable, so excluded from datasets |
 
-**Why not PDS blobs?** A PDS blob would put the bytes in the contributor's
+**Why not PDS blobs for everything?** (`pds` exists since 2026-11-08 for
+everyday contributors without other hosting; for research-scale files prefer
+R2/IPFS/PeerTube, for the reasons below.) A PDS blob puts the bytes in the contributor's
 own repo. Size is not the obstacle: most PDSes accept 100-300 MB blobs (the
 official installer sets `PDS_BLOB_UPLOAD_LIMIT` to 300 MB, and
 `app.bsky.embed.video` allows 300 MB), although a bare deployment defaults to
@@ -391,10 +412,10 @@ matter for rendering in a browser, not for dataset downloads.) Above all,
 blob storage ties the bytes' lifetime to the record and the account: a blob
 is freed when the last record referencing it is deleted, deleted with the
 account, and unavailable while the account is deactivated or taken down
-([blob lifecycle](https://atproto.com/guides/blob-lifecycle)). An optional
-PDS-blob storage kind can still be added compatibly to the current lexicons
-([docs/lexicon-v2.md](docs/lexicon-v2.md), "Compatible additions", lists what
-readers must then check). The `bsky` kind is the exception that fits:
+([blob lifecycle](https://atproto.com/guides/blob-lifecycle)): for
+consent that is a feature (withdraw, and the bytes go), for a long-lived
+research mirror it is not. [docs/lexicon-v2.md](docs/lexicon-v2.md),
+"Shipped compatible additions", lists what readers check for `pds`. The `bsky` kind fits too:
 the bytes are a Bluesky post's video that the contributor already published,
 so their lifetime is the post's (deliberately: deleting the post withdraws
 the clip), and nothing new is put on the PDS. The AppView does not follow
@@ -716,8 +737,8 @@ npm run vectors   # after changing the record builder: refresh tests/fixtures/we
   (no metadata to host; only `127.0.0.1` / `[::1]` origins, not `localhost`).
 - OAuth: `@atproto/oauth-client-browser`, DPoP-bound tokens kept in the
   browser's IndexedDB. Scopes (`app/src/scopes.js`): `atproto` plus
-  `repo:org.consentvid.videoV2?action=create&action=delete` and the same for
-  `consentV2`. A PDS that rejects granular scopes (`invalid_scope`) is offered
+  `repo:org.consentvid.videoV2?action=create&action=delete`, the same for
+  `consentV2`, and `blob:video/*` (uploads). A PDS that rejects granular scopes (`invalid_scope`) is offered
   `transition:generic` instead, only after the user clicks to accept it; both
   are listed in the client metadata, as the spec requires.
 - Handles are resolved through `public.api.bsky.app` (this tells Bluesky the
@@ -732,6 +753,14 @@ npm run vectors   # after changing the record builder: refresh tests/fixtures/we
   video (a byte scan of the MP4 boxes outside `mdat`: a heuristic; the CLI
   uses ffprobe). They explain refusals early; the binding checks are the
   readers'.
+- Uploads: `app/src/mp4strip.js` rewrites MP4/MOV boxes losslessly (see the
+  contributor section), rewriting `stco`/`co64` chunk offsets when `moov`
+  precedes `mdat`; fragmented MP4 is refused. Its tests run on ffmpeg-made
+  fixtures (`app/test/fixtures/`) and, where ffmpeg is installed, compare
+  decoded frame hashes before and after. Not covered: user-data SEI inside
+  H.264/HEVC frames (the CLI's ffmpeg bitstream filters remove those). The
+  blob CID and size returned by `uploadBlob` must equal the local ones, and
+  the PDS's sniffed `mimeType` must name the same container.
 - Strict CSP (meta tag): scripts only from the site, images only from
   Bluesky's video CDN (thumbnails), `connect-src https:` (any user's PDS).
   No analytics, no third-party scripts.

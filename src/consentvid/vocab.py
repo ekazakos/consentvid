@@ -15,7 +15,10 @@ COMPENSATION = tuple(_consent["compensation"]["knownValues"])
 RIGHTS_BASIS = tuple(_consent["rightsBasis"]["knownValues"])
 CAPTURE_PROVENANCE = tuple(_consent["captureProvenance"]["knownValues"])
 PEOPLE_PRESENT = tuple(_consent["peoplePresent"]["knownValues"])
-STORAGE_KINDS = tuple(_video["storageRef"]["properties"]["kind"]["knownValues"])
+# Writers' choices: V1's storage kinds plus 'pds' (videoV2 #pdsBlobRef, a
+# blob in the contributor's own PDS). Bluesky-post storage ('bsky') is
+# chosen with --from-post / contribute_from_post, not here.
+STORAGE_KINDS = (*_video["storageRef"]["properties"]["kind"]["knownValues"], "pds")
 
 # V2 (org.consentvid.consentV2) spells the same vocabulary in kebab-case
 # (versions.camel_to_kebab); the CLI and manifests use the names above.

@@ -613,7 +613,7 @@ def ingest(conn, collection: str, uri: str, did: str, rkey: str, cid: str, value
             upsert_consent(conn, uri, did, rkey, cid, consent_view(collection, value), raw=value)
             _queue_signal_check(conn, did)
         else:
-            upsert_video(conn, uri, did, rkey, cid, video_view(collection, value), raw=value)
+            upsert_video(conn, uri, did, rkey, cid, video_view(collection, value, did), raw=value)
         return []
     view = consent_view(collection, value) if consent and isinstance(value, dict) else {}
     if consent and _same_repo_video(view, did, collection):

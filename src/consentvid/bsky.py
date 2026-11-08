@@ -45,8 +45,8 @@ VIDEO_EMBED = "app.bsky.embed.video"
 RECORD_WITH_MEDIA = "app.bsky.embed.recordWithMedia"
 KIND = "bsky"  # internal storageRef kind (versions.py)
 GET_BLOB = "/xrpc/com.atproto.sync.getBlob"
-# Bluesky accepts videos up to 100 MB; other PDSes may allow more. A
-# download stops here whatever the post claims.
+# Bluesky accepts videos up to 300 MB (social-app VIDEO_MAX_SIZE); other
+# PDSes may allow more. A download stops here whatever the record claims.
 MAX_BLOB_BYTES = 1024 * 1024 * 1024
 _APP_HOSTS = ("bsky.app", "www.bsky.app")
 _transport = None  # httpx transport for download_blob (tests inject a MockTransport)
@@ -178,10 +178,14 @@ def url_matches(url: str, ref: dict) -> bool:
     getBlob for exactly this DID and CID: the PDS may change (account
     migration) without the bytes changing, and the sha256 in the manifest
     binds the bytes whichever host serves them."""
+    return blob_url_matches(url, post_did(ref), ref.get("value") if isinstance(ref, dict) else None)
+
+
+def blob_url_matches(url: str, did: str | None, cid: str | None) -> bool:
+    """Does ``url`` denote blob ``cid`` of repo ``did`` (see url_matches)?"""
     from consentvid.records import check_public_host
 
-    did = post_did(ref)
-    if did is None or not isinstance(url, str):
+    if not did or not cid or not isinstance(url, str):
         return False
     try:
         u = urlsplit(url)
@@ -199,7 +203,7 @@ def url_matches(url: str, ref: dict) -> bool:
         and u.path == GET_BLOB
         and m is not None
         and m.group(1) == did
-        and m.group(2) == ref.get("value")
+        and m.group(2) == cid
         # mlcroissant special-cases these hosts (git clone): never one of them.
         and not u.netloc.lower().startswith(("github.com", "gitlab.com", "huggingface.co"))
     )

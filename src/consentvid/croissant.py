@@ -103,6 +103,8 @@ def video_uri_of(file_object: dict) -> str | None:
 def _file_object(clip: Clip) -> dict | None:
     v, c = clip.video, clip.consent
     storage = v.get("storageRef") or {}
+    if storage.get("kind") == "pds" and not storage.get("did"):
+        storage = {**storage, "did": clip.did}  # a PDS blob is served by its own repo's PDS
     url = public_url(storage)
     if not url:
         return None  # not dereferenceable: can't be part of a shareable dataset

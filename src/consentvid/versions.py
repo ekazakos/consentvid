@@ -76,16 +76,45 @@ def _union_name(value: dict, nsid: str) -> str | None:
 
 
 BSKY_KIND = "bsky"  # internal kind of #bskyPostRef (consentvid.bsky)
+PDS_KIND = "pds"  # internal kind of #pdsBlobRef (a blob in the contributor's own PDS)
+BLOB_TYPE = "blob"
 
 
-def storage_ref_of(storage, nsid: str = VIDEO_V2_NSID) -> dict:
+def blob_parts(blob) -> tuple[str, str | None, int | None]:
+    """(cid, mimeType, size) of an atproto blob ref, in any shape a record
+    arrives in: atproto JSON ({"$link": ...}), a decoded DAG-CBOR link
+    (binary CID, from a verified CAR read) or a plain string. ('', None,
+    None) if it isn't a blob ref."""
+    if not isinstance(blob, dict) or blob.get("$type") != BLOB_TYPE:
+        return "", None, None
+    from consentvid.bsky import _link
+
+    cid = _link(blob.get("ref")) or ""
+    mime = blob.get("mimeType")
+    size = blob.get("size")
+    return (
+        cid,
+        mime if isinstance(mime, str) else None,
+        size if isinstance(size, int) and not isinstance(size, bool) else None,
+    )
+
+
+def storage_ref_of(storage, nsid: str = VIDEO_V2_NSID, did: str | None = None) -> dict:
     """A V2 storage union value as a V1 storageRef. A storage type we don't
     know becomes {'kind': <its $type>, 'value': ''}: opaque, never
     dereferenced, so its bytes are unreachable for us. ``#bskyPostRef``
-    becomes {'kind': 'bsky', 'value': <blob cid>, 'post': {'uri', 'cid'}}."""
+    becomes {'kind': 'bsky', 'value': <blob cid>, 'post': {'uri', 'cid'}};
+    ``#pdsBlobRef`` becomes {'kind': 'pds', 'value': <blob cid>, 'mimeType',
+    'size'} plus 'did' (the repo whose PDS serves it) when ``did`` is given."""
     if not isinstance(storage, dict):
         return {}
     name = _union_name(storage, nsid)
+    if name == "pdsBlobRef":
+        cid, mime, size = blob_parts(storage.get("blob"))
+        ref = {"kind": PDS_KIND, "value": cid, "mimeType": mime, "size": size}
+        if did:
+            ref["did"] = did
+        return ref
     if name == "bskyPostRef":
         post = storage.get("post") if isinstance(storage.get("post"), dict) else {}
         blob = storage.get("blob")
@@ -129,20 +158,21 @@ def content_hash_of_cid(cid: str) -> str | None:
         return None
 
 
-def video_view(nsid: str, record: dict) -> dict:
-    """The internal view of a video record of either version."""
+def video_view(nsid: str, record: dict, did: str | None = None) -> dict:
+    """The internal view of a video record of either version. ``did`` (the
+    repo the record lives in) is needed to dereference PDS-blob storage."""
     if nsid == VIDEO_NSID:
         view = dict(record)
         view.setdefault("labels", [])
         ref = view.get("storageRef")
-        if isinstance(ref, dict) and ref.get("kind") == BSKY_KIND:
-            # Bluesky-post storage exists only in V2 (#bskyPostRef): a V1
-            # record claiming it is opaque, never dereferenced.
-            view["storageRef"] = {"kind": "v1:bsky", "value": ""}
+        if isinstance(ref, dict) and ref.get("kind") in (BSKY_KIND, PDS_KIND):
+            # Bluesky-post and PDS-blob storage exist only in V2: a V1
+            # record claiming them is opaque, never dereferenced.
+            view["storageRef"] = {"kind": f"v1:{ref['kind']}", "value": ""}
         return view
     view = {k: record[k] for k in _VIDEO_COMMON if k in record}
     view["contentHash"] = content_hash_of_cid(record.get("contentHash", "")) or ""
-    view["storageRef"] = storage_ref_of(record.get("storage"), nsid)
+    view["storageRef"] = storage_ref_of(record.get("storage"), nsid, did)
     langs = record.get("langs")
     if isinstance(langs, list) and langs:
         view["language"] = langs[0]
@@ -175,8 +205,8 @@ def consent_view(nsid: str, record: dict) -> dict:
     return view
 
 
-def view(nsid: str, record: dict) -> dict:
-    return consent_view(nsid, record) if nsid in CONSENT_NSIDS else video_view(nsid, record)
+def view(nsid: str, record: dict, did: str | None = None) -> dict:
+    return consent_view(nsid, record) if nsid in CONSENT_NSIDS else video_view(nsid, record, did)
 
 
 def video_record_v2(v: dict) -> dict:
@@ -188,6 +218,16 @@ def video_record_v2(v: dict) -> dict:
             "$type": f"{VIDEO_V2_NSID}#bskyPostRef",
             "post": {"uri": post.get("uri"), "cid": post.get("cid")},
             "blob": ref.get("value", ""),
+        }
+    elif ref.get("kind") == PDS_KIND:
+        storage = {
+            "$type": f"{VIDEO_V2_NSID}#pdsBlobRef",
+            "blob": {
+                "$type": BLOB_TYPE,
+                "ref": {"$link": ref.get("value", "")},
+                "mimeType": ref.get("mimeType"),
+                "size": ref.get("size"),
+            },
         }
     else:
         name, field = _STORAGE_KIND_TO_V2[ref.get("kind")]

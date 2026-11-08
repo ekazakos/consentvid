@@ -493,5 +493,26 @@ _MIME_BY_SUFFIX = {
 VIDEO_MIME_TYPES = frozenset(_MIME_BY_SUFFIX.values()) | {"video/matroska", "video/vnd.avi"}
 
 
+# Container types that name the same format: a PDS stores the type its own
+# file-type sniffing reports for a blob (registered names such as
+# video/matroska), while writers (mime_for) use the common x- spellings.
+_MIME_CLASSES = (
+    frozenset({"video/matroska", "video/x-matroska"}),
+    frozenset({"video/vnd.avi", "video/x-msvideo", "video/avi", "video/msvideo"}),
+    frozenset({"video/mp4", "video/x-m4v"}),
+    frozenset({"video/mpeg", "video/MP1S", "video/MP2P"}),
+)
+
+
+def same_container(a: str | None, b: str | None) -> bool:
+    """Do two video MIME types name the same container (see _MIME_CLASSES)?"""
+    if not isinstance(a, str) or not isinstance(b, str):
+        return False
+    a, b = a.split(";", 1)[0].strip(), b.split(";", 1)[0].strip()
+    if a.lower() == b.lower():
+        return True
+    return any(a in cls and b in cls for cls in _MIME_CLASSES)
+
+
 def mime_for(path_or_name) -> str | None:
     return _MIME_BY_SUFFIX.get(Path(str(path_or_name)).suffix.lower())

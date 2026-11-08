@@ -563,8 +563,9 @@ class Session:
 
         The file is stripped of identifying metadata (needs ffmpeg) unless
         ``keep_metadata``, hashed, and uploaded to ``storage`` ("r2",
-        "ipfs", "peertube"; default: $CONSENTVID_STORAGE, else r2 if
-        configured, else "local"). Or pass ``storage="url"`` and
+        "ipfs", "peertube", or "pds": a blob in your own PDS, no post, up to
+        300 MB and freed when you revoke; default: $CONSENTVID_STORAGE, else
+        r2 if configured, else "local"). Or pass ``storage="url"`` and
         ``storage_value`` (an https URL where you host the already-clean
         bytes). Raises AlreadyRegistered if you registered the same bytes
         before (unless ``allow_duplicate``)."""
@@ -957,7 +958,7 @@ def check(uri: str, *, include_labeled: bool = False, relay_status: bool = True)
     if not video.present:
         return result(resync.REVOKED, "the video record is gone", video.proven)
     try:
-        v_view = versions.video_view(video_at.collection, video.value)
+        v_view = versions.video_view(video_at.collection, video.value, video_at.did)
     except Exception as e:  # noqa: BLE001
         return result(resync.INVALID, f"malformed video record: {e}", True)
     clip = Clip(str(consent_at), str(consent.cid), c_view, str(video_at), str(video.cid), v_view, at.did)

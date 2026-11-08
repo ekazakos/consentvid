@@ -61,7 +61,15 @@ from consentvid.records import (
     parse_dt,
     url_host_port_error,
 )
-from consentvid.versions import BSKY_KIND, SELF_LABELS_TYPE, consent_view, storage_ref_of, video_view
+from consentvid.versions import (
+    BSKY_KIND,
+    PDS_KIND,
+    SELF_LABELS_TYPE,
+    blob_parts,
+    consent_view,
+    storage_ref_of,
+    video_view,
+)
 from consentvid.vocab import IDENTITY_MODALITIES, PEOPLE_PRESENT, PEOPLE_PRESENT_V2
 
 BSKY_POST_NSID = "app.bsky.feed.post"
@@ -267,6 +275,26 @@ def _video_v2_rules(record: dict) -> list[str]:
         errors.extend(e.replace("storageRef.value", "storage") for e in storage_ref_errors(ref))
         if ref.get("kind") == BSKY_KIND and isinstance(h, str) and ref.get("value") != h:
             errors.append("storage.blob must equal contentHash: the post's video blob is the registered bytes")
+        if ref.get("kind") == PDS_KIND:
+            errors.extend(_pds_blob_rules(record, ref))
+    return errors
+
+
+def _pds_blob_rules(record: dict, ref: dict) -> list[str]:
+    """A #pdsBlobRef binds to the record's bytes: same CID as contentHash,
+    same size, same container type."""
+    from consentvid.records import same_container
+
+    errors = []
+    h = record.get("contentHash")
+    if isinstance(h, str) and ref.get("value") and ref.get("value") != h:
+        errors.append("storage.blob.ref must equal contentHash: the blob is the registered bytes")
+    size = record.get("size")
+    if isinstance(size, int) and isinstance(ref.get("size"), int) and size != ref["size"]:
+        errors.append(f"storage.blob.size {ref['size']} differs from size {size}")
+    mime, blob_mime = record.get("mimeType"), ref.get("mimeType")
+    if isinstance(mime, str) and isinstance(blob_mime, str) and not same_container(mime, blob_mime):
+        errors.append(f"storage.blob.mimeType {blob_mime!r} is not the same container as mimeType {mime!r}")
     return errors
 
 
@@ -384,6 +412,10 @@ def storage_ref_errors(ref) -> list[str]:
         if isinstance(cid, str) and _is_cid(cid) and _cid_codec(cid) != _DAG_CBOR:
             errors.append("storage.post.cid must be the CID of a record (dag-cbor)")
         return errors
+    if kind == PDS_KIND:
+        if not (_is_cid(value) and _cid_codec(value) == _RAW):
+            return ["storage.blob.ref must be the CID of the raw video bytes (bafkrei...)"]
+        return []
     # 'local' (and kinds we don't know): opaque names, never dereferenced.
     if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value):
         return ["storageRef.value must not contain control characters"]
@@ -571,6 +603,9 @@ def _validate_field(field_schema: dict, value, ctx: _Ctx, path: str) -> list[str
             errs.append(f"{path}: {value} not in enum {field_schema['enum']}")
         return errs
 
+    if ftype == "blob":
+        return _validate_blob(field_schema, value, path)
+
     if ftype == "boolean":
         if not isinstance(value, bool):
             return [f"{path}: expected boolean, got {_typename(value)}"]
@@ -592,6 +627,42 @@ def _validate_field(field_schema: dict, value, ctx: _Ctx, path: str) -> list[str
         return errs
 
     return []  # unsupported type: don't block
+
+
+def _validate_blob(field_schema: dict, value, path: str) -> list[str]:
+    """An atproto blob ref ({"$type": "blob", "ref", "mimeType", "size"}),
+    with the lexicon's accept and maxSize: a PDS checks these only for the
+    lexicons it knows, so readers must. The legacy {cid, mimeType} form is
+    refused (records written today never use it)."""
+    if not isinstance(value, dict):
+        return [f"{path}: expected blob, got {_typename(value)}"]
+    if value.get("$type") != "blob":
+        return [f"{path}: a blob ref needs $type 'blob'"]
+    cid, mime, size = blob_parts(value)
+    errs = []
+    if not cid or not _is_cid(cid):
+        errs.append(f"{path}.ref: not a CID link")
+    if not mime or "/" not in mime:
+        errs.append(f"{path}.mimeType: missing or not a MIME type")
+    if size is None or size < 0:
+        errs.append(f"{path}.size: missing or not a non-negative integer")
+    accept = field_schema.get("accept")
+    if mime and isinstance(accept, list) and accept and not any(_mime_accepts(a, mime) for a in accept):
+        errs.append(f"{path}.mimeType: {mime!r} is not one of {accept}")
+    max_size = field_schema.get("maxSize")
+    if size is not None and isinstance(max_size, int) and size > max_size:
+        errs.append(f"{path}.size: {size} bytes exceeds maxSize {max_size}")
+    return errs
+
+
+def _mime_accepts(pattern: str, mime: str) -> bool:
+    mime = mime.split(";", 1)[0].strip().lower()
+    pattern = pattern.lower()
+    if pattern == "*/*":
+        return True
+    if pattern.endswith("/*"):
+        return mime.startswith(pattern[:-1])
+    return mime == pattern
 
 
 def _validate_union(field_schema: dict, value, ctx: _Ctx, path: str) -> list[str]:

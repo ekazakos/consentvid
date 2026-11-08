@@ -69,6 +69,8 @@ clip.video_uri, clip.consent_uri, clip.content_hash, clip.storage
 ```
 
 `storage`: `"r2"`, `"ipfs"` or `"peertube"` upload the stripped file;
+`"pds"` uploads it as a blob to your own PDS (no post; up to 300 MB, less on
+some PDSes; revoking the video frees it, and it stays tied to your account);
 `"url"` with `storage_value="https://..."` points at a copy you host (it must
 already be stripped); `"local"` keeps the bytes on your disk (not usable in
 shared datasets). The default is `$CONSENTVID_STORAGE`, else `r2` if

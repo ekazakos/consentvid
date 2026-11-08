@@ -6,7 +6,7 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: https://video.bsky.app https://video.cdn.bsky.app; media-src blob:; connect-src 'self' https:; form-action 'none'; base-uri 'none'; object-src 'none'">
 <meta name="referrer" content="no-referrer">
 <title>Contribute your Bluesky videos — ConsentVid</title>
-<meta name="description" content="Sign in with Bluesky, pick your video posts, and sign an explicit, revocable consent for AI use.">
+<meta name="description" content="Sign in with Bluesky, pick your video posts or upload a video, and sign an explicit, revocable consent for AI use.">
 <meta name="theme-color" content="#7c3aed">
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%237c3aed'/%3E%3Cstop offset='.5' stop-color='%23d946ef'/%3E%3Cstop offset='1' stop-color='%2306b6d4'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='16' fill='url(%23g)'/%3E%3Cpath d='M19 33 l9 9 l17 -19' fill='none' stroke='white' stroke-width='6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -32,8 +32,9 @@
 
 <main class="wrap app">
   <h1>Contribute your <span class="grad">Bluesky videos</span></h1>
-  <p class="lede">Pick videos you posted on Bluesky and sign an explicit consent saying how they may be used for AI.
-    Your videos stay on your own server, tied to your posts: delete a post, or withdraw here, and it leaves every dataset.</p>
+  <p class="lede">Pick videos you posted on Bluesky, or upload one from your computer without posting it, and sign an
+    explicit consent saying how they may be used for AI. Your videos stay on your own Bluesky server: withdraw here, or
+    delete the post, and the video leaves every dataset.</p>
 
   <noscript><p class="notice error">This page needs JavaScript: it signs your consent records in your browser.</p></noscript>
   <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
@@ -41,7 +42,8 @@
   <section id="signin" class="card" hidden aria-labelledby="signin-h">
     <h2 id="signin-h">Sign in with Bluesky</h2>
     <p>You'll be sent to your own server to approve. ConsentVid only asks to create and delete
-      <span class="mono">org.consentvid.*</span> records in your account. It can't post, follow or read your private data.</p>
+      <span class="mono">org.consentvid.*</span> records in your account and to upload video files to it. It can't post,
+      follow or read your private data.</p>
     <form id="signin-form" class="row">
       <label class="grow">
         <span class="sr-only">Your handle</span>
@@ -61,10 +63,32 @@
   <section id="contribute" hidden>
     <div class="card">
       <h2>1. Choose videos</h2>
-      <p class="muted small">Your video posts on Bluesky. Ones already in ConsentVid can be withdrawn.</p>
-      <ul id="posts" class="posts"></ul>
-      <p id="posts-empty" class="muted" hidden>No video posts found in your account.</p>
-      <button id="more" class="btn ghost small" type="button" hidden>Load older posts</button>
+      <div class="tabs" role="tablist" aria-label="Where the videos come from">
+        <button id="tab-posts" role="tab" type="button" aria-selected="true" aria-controls="panel-posts">My Bluesky posts</button>
+        <button id="tab-upload" role="tab" type="button" aria-selected="false" aria-controls="panel-upload">Upload from my computer</button>
+      </div>
+      <div id="panel-posts" role="tabpanel" aria-labelledby="tab-posts">
+        <p class="muted small">Your video posts on Bluesky. Ones already in ConsentVid can be withdrawn.</p>
+        <ul id="posts" class="posts"></ul>
+        <p id="posts-empty" class="muted" hidden>No video posts found in your account.</p>
+        <button id="more" class="btn ghost small" type="button" hidden>Load older posts</button>
+      </div>
+      <div id="panel-upload" role="tabpanel" aria-labelledby="tab-upload" hidden>
+        <p class="muted small">The video is stored on your own Bluesky server, not posted: it won't appear in your feed.
+          Up to 300 MB per file (some servers accept less). Location, device and other identifying metadata is removed
+          in your browser before upload (MP4 and MOV; nothing is re-encoded). Withdrawing deletes the file again.</p>
+        <label id="drop" class="drop">
+          <input id="file" type="file" accept="video/*" multiple class="sr-only">
+          <span><b>Choose video files</b> or drop them here</span>
+        </label>
+        <ul id="files" class="posts files"></ul>
+      </div>
+    </div>
+
+    <div id="others-card" class="card" hidden>
+      <h2>Your uploaded videos</h2>
+      <p class="muted small">Videos in ConsentVid that aren't Bluesky posts (uploaded here or with the command-line tool).</p>
+      <ul id="others" class="posts"></ul>
     </div>
 
     <form id="terms" class="card" novalidate>
@@ -125,7 +149,7 @@
       <div id="summary" class="muted">Choose at least one video and your terms.</div>
       <ul id="errors" class="errors" hidden></ul>
       <label class="check" id="keep-metadata-row" hidden><input type="checkbox" id="keep-metadata">
-        Include videos that carry identifying metadata anyway (not recommended).</label>
+        Include videos whose identifying metadata can't be removed here, as they are (not recommended).</label>
       <button id="sign" class="btn primary" type="button" disabled>Sign consent</button>
       <ol id="log" class="log" aria-live="polite"></ol>
     </div>
