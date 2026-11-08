@@ -631,7 +631,7 @@ def _published(nsid):
     return _json.loads((Path(__file__).parent / "fixtures" / "published_lexicons" / f"{nsid}.json").read_text())
 
 
-@pytest.mark.parametrize("nsid", [C, V])
+@pytest.mark.parametrize("nsid", [C, V, "org.consentvid.consentV2", "org.consentvid.videoV2"])
 def test_local_lexicons_evolve_compatibly_from_the_published_ones(nsid):
     from consentvid.lexicons import compat_errors, load_lexicon
 

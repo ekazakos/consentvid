@@ -1,0 +1,197 @@
+{
+  "id": "org.consentvid.videoV2",
+  "defs": {
+    "main": {
+      "key": "tid",
+      "type": "record",
+      "record": {
+        "type": "object",
+        "required": [
+          "title",
+          "contentHash",
+          "storage",
+          "createdAt"
+        ],
+        "properties": {
+          "size": {
+            "type": "integer",
+            "maximum": 9007199254740991,
+            "minimum": 1,
+            "description": "Size of the video bytes, in bytes."
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 640,
+              "minLength": 1,
+              "maxGraphemes": 64
+            },
+            "maxLength": 8,
+            "description": "Topic tags."
+          },
+          "langs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "language"
+            },
+            "maxLength": 3,
+            "description": "Spoken languages, primary first (BCP-47, lowercase primary subtag, e.g. en, cs, pt-BR)."
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 3000,
+            "minLength": 1,
+            "description": "Human-readable title.",
+            "maxGraphemes": 300
+          },
+          "width": {
+            "type": "integer",
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "description": "Frame width in pixels."
+          },
+          "height": {
+            "type": "integer",
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "description": "Frame height in pixels."
+          },
+          "labels": {
+            "refs": [
+              "com.atproto.label.defs#selfLabels"
+            ],
+            "type": "union",
+            "description": "Self-labels the contributor applies to the video (e.g. 'nudity', 'sexual', 'porn', 'graphic-media'). Dataset tools leave labeled clips out unless asked to include them."
+          },
+          "storage": {
+            "refs": [
+              "#r2Ref",
+              "#ipfsRef",
+              "#peertubeRef",
+              "#urlRef",
+              "#localRef"
+            ],
+            "type": "union",
+            "description": "Where the bytes live. Readers that don't know a storage type treat the bytes as unreachable."
+          },
+          "mimeType": {
+            "type": "string",
+            "maxLength": 128,
+            "description": "MIME type of the video bytes. Readers reject values outside knownValues: it becomes the dataset's encodingFormat, which dataset loaders act on.",
+            "knownValues": [
+              "video/3gpp",
+              "video/matroska",
+              "video/mp2t",
+              "video/mp4",
+              "video/mpeg",
+              "video/quicktime",
+              "video/vnd.avi",
+              "video/webm",
+              "video/x-matroska",
+              "video/x-msvideo"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "datetime",
+            "description": "Record write time."
+          },
+          "durationMs": {
+            "type": "integer",
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "description": "Duration in milliseconds."
+          },
+          "contentHash": {
+            "type": "string",
+            "format": "cid",
+            "description": "The video bytes' CIDv1 with the raw codec and a sha-256 multihash, in base32 (bafkrei...): the same value a PDS blob ref carries for these bytes. Readers reject any other codec or hash."
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 30000,
+            "maxGraphemes": 3000
+          }
+        }
+      },
+      "description": "A video registered for inclusion in a consent-first dataset (version 2 of org.consentvid.video). The record commits to the bytes by content hash and says where they are stored; it does not hold them. Its consent, if any, is the org.consentvid.consentV2 record in the same repo with the same record key (a sidecar record). Records are public: never put personal data or filesystem paths in them."
+    },
+    "r2Ref": {
+      "type": "object",
+      "required": [
+        "url"
+      ],
+      "properties": {
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "maxLength": 2048,
+          "description": "https URL on a public host and the default port, without credentials."
+        }
+      },
+      "description": "The public https URL of a Cloudflare R2 object."
+    },
+    "urlRef": {
+      "type": "object",
+      "required": [
+        "url"
+      ],
+      "properties": {
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "maxLength": 2048,
+          "description": "https URL on a public host and the default port, without credentials."
+        }
+      },
+      "description": "Bytes at a public https URL."
+    },
+    "ipfsRef": {
+      "type": "object",
+      "required": [
+        "cid"
+      ],
+      "properties": {
+        "cid": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "The IPFS CID: CIDv1 in lowercase base32 (b...) or CIDv0 (Qm...); IPFS commonly uses codecs other than atproto's, so this is not format 'cid'."
+        }
+      },
+      "description": "Bytes on IPFS."
+    },
+    "localRef": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "maxLength": 256,
+          "minLength": 1,
+          "description": "An opaque name (no control characters). Never a filesystem path: records are public."
+        }
+      },
+      "description": "Bytes kept by the contributor, not published. Never dereferenced."
+    },
+    "peertubeRef": {
+      "type": "object",
+      "required": [
+        "url"
+      ],
+      "properties": {
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "maxLength": 2048,
+          "description": "https watch or download URL on a public host and the default port, without credentials."
+        }
+      },
+      "description": "A video on a PeerTube instance."
+    }
+  },
+  "lexicon": 1
+}
