@@ -10,3 +10,8 @@ updates:
     directory: /app
     schedule:
       interval: weekly
+  # The hashtag bot's npm dependencies (bot/package-lock.json).
+  - package-ecosystem: npm
+    directory: /bot
+    schedule:
+      interval: weekly

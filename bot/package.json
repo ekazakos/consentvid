@@ -1,0 +1,18 @@
+{
+  "name": "consentvid-bot",
+  "private": true,
+  "version": "0.1.0",
+  "description": "ConsentVid hashtag bot: a Cloudflare Worker that replies to tagged Bluesky video posts with a consent link.",
+  "type": "module",
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "test": "node --test \"test/*.test.js\"",
+    "dev": "wrangler dev --test-scheduled",
+    "deploy": "wrangler deploy",
+    "migrate": "wrangler d1 migrations apply consentvid-bot --remote",
+    "setup-profile": "node scripts/setup.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "4.149.0"
+  }
+}

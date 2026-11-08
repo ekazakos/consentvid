@@ -1,0 +1,33 @@
+# ConsentVid hashtag bot. See README.md for the wiring steps.
+name = "consentvid-bot"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+workers_dev = false   # cron-only: no public HTTP endpoint
+
+[triggers]
+crons = ["* * * * *"]  # every minute (the free plan allows cron triggers)
+
+[vars]
+# Logs the replies it would post instead of posting them. Set to "false" only
+# after the account, D1 database, secrets and profile setup are done.
+DRY_RUN = "true"
+# Where createSession/refreshSession go first. The session's DID document
+# then names the account's own PDS, which all later calls use.
+BOT_ENTRYWAY = "https://bsky.social"
+APP_URL = "https://consentvid.org/app/"
+MAX_PER_RUN = "20"
+MAX_PER_DAY = "300"
+MAX_PER_AUTHOR_PER_DAY = "5"
+
+# Secrets (wrangler secret put ...), never in this file:
+#   BOT_HANDLE         e.g. consentvid.org
+#   BOT_APP_PASSWORD   an app password of the bot account
+
+[[d1_databases]]
+binding = "DB"
+database_name = "consentvid-bot"
+database_id = "REPLACE_WITH_ID_FROM_wrangler_d1_create"
+migrations_dir = "migrations"
+
+[observability]
+enabled = true
