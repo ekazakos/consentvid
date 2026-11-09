@@ -10,7 +10,7 @@ crons = ["* * * * *"]  # every minute (the free plan allows cron triggers)
 [vars]
 # Logs the replies it would post instead of posting them. Set to "false" only
 # after the account, D1 database, secrets and profile setup are done.
-DRY_RUN = "true"
+DRY_RUN = "false"
 # Where createSession/refreshSession go first. The session's DID document
 # then names the account's own PDS, which all later calls use.
 BOT_ENTRYWAY = "https://bsky.social"
