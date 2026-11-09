@@ -18,6 +18,7 @@ export class RateLimited extends Error {
   }
 }
 
+// redirect: 'manual' — Workers reject 'error'; a 3xx is then !res.ok and fails below.
 export async function xrpc(fetchFn, base, nsid, { params, body, post = false, token, proxy, now = Date.now() } = {}) {
   const url = new URL(`/xrpc/${nsid}`, base)
   for (const [k, v] of Object.entries(params || {})) {
@@ -27,7 +28,7 @@ export async function xrpc(fetchFn, base, nsid, { params, body, post = false, to
   const headers = { accept: 'application/json' }
   if (token) headers.authorization = `Bearer ${token}`
   if (proxy) headers['atproto-proxy'] = proxy
-  const init = { method: body === undefined && !post ? 'GET' : 'POST', headers, redirect: 'error' }
+  const init = { method: body === undefined && !post ? 'GET' : 'POST', headers, redirect: 'manual' }
   if (body !== undefined) {
     headers['content-type'] = 'application/json'
     init.body = JSON.stringify(body)
@@ -59,7 +60,7 @@ export async function resolvePds(fetchFn, did) {
     if (!/^[a-z0-9.-]+$/i.test(host)) throw new Error(`unsupported did:web ${did}`)
     docUrl = `https://${host}/.well-known/did.json`
   } else throw new Error(`unsupported DID method: ${did}`)
-  const res = await fetchFn(docUrl, { headers: { accept: 'application/json' }, redirect: 'error' })
+  const res = await fetchFn(docUrl, { headers: { accept: 'application/json' }, redirect: 'manual' })
   if (!res.ok) throw new Error(`DID document for ${did}: HTTP ${res.status}`)
   return pdsFromDidDoc(await res.json())
 }

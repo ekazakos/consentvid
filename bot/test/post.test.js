@@ -77,3 +77,12 @@ test('graphemes counts clusters, not code units', () => {
   assert.equal(graphemes('é'), 1)
   assert.equal(graphemes('abc'), 3)
 })
+
+test('fetch never uses redirect "error" (unsupported in Cloudflare Workers)', async () => {
+  const { readFileSync } = await import('node:fs')
+  const src = readFileSync(new URL('../src/xrpc.js', import.meta.url), 'utf8')
+  assert.ok(!src.includes("redirect: 'error'"))
+  const { xrpc } = await import('../src/xrpc.js')
+  const fakeFetch = async () => new Response('', { status: 302, headers: { location: 'https://evil.example' } })
+  await assert.rejects(xrpc(fakeFetch, 'https://pds.example', 'com.atproto.server.describeServer'))
+})

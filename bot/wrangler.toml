@@ -18,15 +18,16 @@ APP_URL = "https://consentvid.org/app/"
 MAX_PER_RUN = "20"
 MAX_PER_DAY = "300"
 MAX_PER_AUTHOR_PER_DAY = "5"
+# The bot account (public, not a secret).
+BOT_HANDLE = "consentvid.org"
 
 # Secrets (wrangler secret put ...), never in this file:
-#   BOT_HANDLE         e.g. consentvid.org
 #   BOT_APP_PASSWORD   an app password of the bot account
 
 [[d1_databases]]
 binding = "DB"
 database_name = "consentvid-bot"
-database_id = "REPLACE_WITH_ID_FROM_wrangler_d1_create"
+database_id = "60e1ec93-6c4a-475e-bba5-aecb221f5192"
 migrations_dir = "migrations"
 
 [observability]
