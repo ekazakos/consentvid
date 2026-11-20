@@ -3,87 +3,147 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ConsentVid — dataset terms of use</title>
-<meta name="description" content="How use of ConsentVid datasets is governed: by each clip's signed consent receipt, not a blanket licence.">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; font-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; object-src 'none'">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<title>Terms of use · consentvid</title>
+<meta name="description" content="How use of consentvid datasets is governed: by each clip's signed consent record, not a blanket licence.">
+<meta name="theme-color" content="#A8462A" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#5C2412" media="(prefers-color-scheme: dark)">
+<link rel="preload" href="fonts/Besley-VF.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/IBMPlexSans-400-normal-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
 <link rel="stylesheet" href="styles.css">
-<style>
-  .terms{max-width:720px;margin:0 auto;padding:64px 20px 96px;line-height:1.65}
-  .terms h1{font-family:Fraunces,Georgia,serif;font-weight:500;font-size:clamp(30px,5vw,42px);margin:0 0 8px}
-  .terms h2{font-family:Fraunces,Georgia,serif;font-weight:500;font-size:22px;margin:36px 0 8px}
-  .terms code{font-family:"JetBrains Mono",ui-monospace,monospace;font-size:.92em}
-  .terms li{margin:6px 0}
-</style>
 </head>
-<body>
-<main class="terms">
-  <p><a href="/">← consentvid.org</a></p>
-  <h1>Dataset terms of use</h1>
-  <p>ConsentVid datasets have no blanket licence. Each clip may be used only within the terms of
-  its own <strong>consent receipt</strong>: a record in the contributor's ATproto repository, signed
-  by their key, referenced from the manifest as <code>cv:consentReceipt</code>.</p>
+<body class="doc-page">
+<a class="skip" href="#main">Skip to content</a>
 
-  <h2>What a receipt grants</h2>
+<header class="bar">
+  <div class="wrap bar-in">
+    <a class="mark" href="./" aria-label="consentvid"><span aria-hidden="true"><span class="w-c">consen</span><span class="tie"><svg class="chain" viewBox="0 0 34 17" aria-hidden="true" focusable="false" shape-rendering="crispEdges"><rect x="14" y="0" width="10" height="1" fill="#1A0E08"/><rect x="29" y="0" width="3" height="1" fill="#1A0E08"/><rect x="13" y="1" width="2" height="1" fill="#1A0E08"/><rect x="15" y="1" width="5" height="1" fill="#FFFFFF"/><rect x="20" y="1" width="4" height="1" fill="#FFF3D6"/><rect x="29" y="1" width="2" height="1" fill="#FFF3D6"/><rect x="31" y="1" width="2" height="1" fill="#1A0E08"/><rect x="12" y="2" width="2" height="1" fill="#1A0E08"/><rect x="14" y="2" width="1" height="1" fill="#FFFFFF"/><rect x="15" y="2" width="9" height="1" fill="#FFF3D6"/><rect x="29" y="2" width="3" height="1" fill="#FFF3D6"/><rect x="32" y="2" width="2" height="1" fill="#1A0E08"/><rect x="12" y="3" width="1" height="1" fill="#1A0E08"/><rect x="13" y="3" width="1" height="1" fill="#FFFFFF"/><rect x="14" y="3" width="2" height="1" fill="#FFF3D6"/><rect x="16" y="3" width="8" height="1" fill="#D6BE8E"/><rect x="29" y="3" width="1" height="1" fill="#D6BE8E"/><rect x="30" y="3" width="2" height="1" fill="#FFF3D6"/><rect x="32" y="3" width="1" height="1" fill="#D6BE8E"/><rect x="33" y="3" width="1" height="1" fill="#1A0E08"/><rect x="12" y="4" width="1" height="1" fill="#1A0E08"/><rect x="13" y="4" width="1" height="1" fill="#FFFFFF"/><rect x="14" y="4" width="1" height="1" fill="#FFF3D6"/><rect x="15" y="4" width="2" height="1" fill="#D6BE8E"/><rect x="29" y="4" width="1" height="1" fill="#D6BE8E"/><rect x="30" y="4" width="2" height="1" fill="#FFF3D6"/><rect x="32" y="4" width="1" height="1" fill="#D6BE8E"/><rect x="33" y="4" width="1" height="1" fill="#1A0E08"/><rect x="1" y="5" width="2" height="1" fill="#1A0E08"/><rect x="3" y="5" width="2" height="1" fill="#FFFFFF"/><rect x="10" y="5" width="2" height="1" fill="#FFF3D6"/><rect x="12" y="5" width="1" height="1" fill="#1A0E08"/><rect x="13" y="5" width="1" height="1" fill="#FFFFFF"/><rect x="14" y="5" width="1" height="1" fill="#FFF3D6"/><rect x="15" y="5" width="1" height="1" fill="#D6BE8E"/><rect x="16" y="5" width="3" height="1" fill="#FFF3D6"/><rect x="19" y="5" width="2" height="1" fill="#1A0E08"/><rect x="30" y="5" width="2" height="1" fill="#FFF3D6"/><rect x="32" y="5" width="1" height="1" fill="#D6BE8E"/><rect x="33" y="5" width="1" height="1" fill="#1A0E08"/><rect x="0" y="6" width="2" height="1" fill="#1A0E08"/><rect x="2" y="6" width="1" height="1" fill="#FFFFFF"/><rect x="3" y="6" width="2" height="1" fill="#FFF3D6"/><rect x="10" y="6" width="2" height="1" fill="#FFF3D6"/><rect x="12" y="6" width="1" height="1" fill="#1A0E08"/><rect x="13" y="6" width="1" height="1" fill="#FFFFFF"/><rect x="14" y="6" width="1" height="1" fill="#FFF3D6"/><rect x="15" y="6" width="1" height="1" fill="#D6BE8E"/><rect x="16" y="6" width="4" height="1" fill="#FFF3D6"/><rect x="20" y="6" width="2" height="1" fill="#1A0E08"/><rect x="30" y="6" width="2" height="1" fill="#FFF3D6"/><rect x="32" y="6" width="1" height="1" fill="#D6BE8E"/><rect x="33" y="6" width="1" height="1" fill="#1A0E08"/><rect x="0" y="7" width="1" height="1" fill="#1A0E08"/><rect x="1" y="7" width="1" height="1" fill="#FFFFFF"/><rect x="2" y="7" width="2" height="1" fill="#FFF3D6"/><rect x="4" y="7" width="1" height="1" fill="#D6BE8E"/><rect x="10" y="7" width="2" height="1" fill="#D6BE8E"/><rect x="12" y="7" width="1" height="1" fill="#1A0E08"/><rect x="13" y="7" width="1" height="1" fill="#FFFFFF"/><rect x="14" y="7" width="1" height="1" fill="#FFF3D6"/><rect x="15" y="7" width="3" height="1" fill="#D6BE8E"/><rect x="18" y="7" width="2" height="1" fill="#FFF3D6"/><rect x="20" y="7" width="1" height="1" fill="#D6BE8E"/><rect x="21" y="7" width="1" height="1" fill="#1A0E08"/><rect x="30" y="7" width="2" height="1" fill="#FFF3D6"/><rect x="32" y="7" width="1" height="1" fill="#D6BE8E"/><rect x="33" y="7" width="1" height="1" fill="#1A0E08"/><rect x="0" y="8" width="1" height="1" fill="#1A0E08"/><rect x="1" y="8" width="1" height="1" fill="#FFFFFF"/><rect x="2" y="8" width="1" height="1" fill="#FFF3D6"/><rect x="3" y="8" width="2" height="1" fill="#D6BE8E"/><rect x="12" y="8" width="1" height="1" fill="#1A0E08"/><rect x="13" y="8" width="2" height="1" fill="#FFF3D6"/><rect x="15" y="8" width="3" height="1" fill="#D6BE8E"/><rect x="18" y="8" width="2" height="1" fill="#FFF3D6"/><rect x="20" y="8" width="1" height="1" fill="#D6BE8E"/><rect x="21" y="8" width="1" height="1" fill="#1A0E08"/><rect x="29" y="8" width="3" height="1" fill="#FFF3D6"/><rect x="32" y="8" width="1" height="1" fill="#D6BE8E"/><rect x="33" y="8" width="1" height="1" fill="#1A0E08"/><rect x="0" y="9" width="1" height="1" fill="#1A0E08"/><rect x="1" y="9" width="1" height="1" fill="#FFFFFF"/><rect x="2" y="9" width="1" height="1" fill="#FFF3D6"/><rect x="3" y="9" width="1" height="1" fill="#D6BE8E"/><rect x="12" y="9" width="1" height="1" fill="#1A0E08"/><rect x="13" y="9" width="7" height="1" fill="#FFF3D6"/><rect x="20" y="9" width="1" height="1" fill="#D6BE8E"/><rect x="21" y="9" width="1" height="1" fill="#1A0E08"/><rect x="22" y="9" width="10" height="1" fill="#FFF3D6"/><rect x="32" y="9" width="1" height="1" fill="#D6BE8E"/><rect x="33" y="9" width="1" height="1" fill="#1A0E08"/><rect x="0" y="10" width="1" height="1" fill="#1A0E08"/><rect x="1" y="10" width="1" height="1" fill="#FFFFFF"/><rect x="2" y="10" width="1" height="1" fill="#FFF3D6"/><rect x="3" y="10" width="1" height="1" fill="#D6BE8E"/><rect x="12" y="10" width="2" height="1" fill="#1A0E08"/><rect x="14" y="10" width="6" height="1" fill="#FFF3D6"/><rect x="20" y="10" width="1" height="1" fill="#D6BE8E"/><rect x="21" y="10" width="1" height="1" fill="#1A0E08"/><rect x="22" y="10" width="10" height="1" fill="#FFF3D6"/><rect x="32" y="10" width="2" height="1" fill="#1A0E08"/><rect x="0" y="11" width="1" height="1" fill="#1A0E08"/><rect x="1" y="11" width="1" height="1" fill="#FFFFFF"/><rect x="2" y="11" width="1" height="1" fill="#FFF3D6"/><rect x="3" y="11" width="1" height="1" fill="#D6BE8E"/><rect x="13" y="11" width="2" height="1" fill="#1A0E08"/><rect x="15" y="11" width="3" height="1" fill="#D6BE8E"/><rect x="18" y="11" width="2" height="1" fill="#FFF3D6"/><rect x="20" y="11" width="1" height="1" fill="#D6BE8E"/><rect x="21" y="11" width="1" height="1" fill="#1A0E08"/><rect x="22" y="11" width="9" height="1" fill="#D6BE8E"/><rect x="31" y="11" width="2" height="1" fill="#1A0E08"/><rect x="0" y="12" width="1" height="1" fill="#1A0E08"/><rect x="1" y="12" width="2" height="1" fill="#FFF3D6"/><rect x="3" y="12" width="2" height="1" fill="#D6BE8E"/><rect x="14" y="12" width="3" height="1" fill="#1A0E08"/><rect x="17" y="12" width="3" height="1" fill="#FFF3D6"/><rect x="20" y="12" width="1" height="1" fill="#D6BE8E"/><rect x="21" y="12" width="11" height="1" fill="#1A0E08"/><rect x="0" y="13" width="1" height="1" fill="#1A0E08"/><rect x="1" y="13" width="19" height="1" fill="#FFF3D6"/><rect x="20" y="13" width="1" height="1" fill="#D6BE8E"/><rect x="21" y="13" width="1" height="1" fill="#1A0E08"/><rect x="0" y="14" width="2" height="1" fill="#1A0E08"/><rect x="2" y="14" width="18" height="1" fill="#FFF3D6"/><rect x="20" y="14" width="2" height="1" fill="#1A0E08"/><rect x="1" y="15" width="2" height="1" fill="#1A0E08"/><rect x="3" y="15" width="16" height="1" fill="#D6BE8E"/><rect x="19" y="15" width="2" height="1" fill="#1A0E08"/><rect x="2" y="16" width="18" height="1" fill="#1A0E08"/></svg><span class="tie-t">t</span><span class="tie-v">v</span></span><span class="w-v">id</span></span></a>
+    <nav class="nav" aria-label="Site">
+      <a href="./#how">Contribute</a>
+      <a href="./#public">What’s public</a>
+      <a href="./#researchers">Build a dataset</a>
+      <a href="./#limits">Limitations</a>
+      <a href="license.html" aria-current="page">Terms</a>
+      <a href="https://github.com/ekazakos/consentvid">Code</a>
+    </nav>
+    <a class="btn btn-go" href="app/">Give consent</a>
+  </div>
+</header>
+
+<main id="main">
+  <div class="doc-hero">
+    <div class="wrap">
+      <p class="kicker" aria-hidden="true">consentvid.org / terms</p>
+      <h1>Terms of use</h1>
+    </div>
+  </div>
+  <div class="wrap doc-grid">
+    <nav class="toc" aria-label="Sections">
+      <div class="toc-in">
+        <p>Sections</p>
+        <ol>
+          <li><a href="#what-a-receipt-grants">What a consent record grants</a></li>
+          <li><a href="#people">People in the video and age</a></li>
+          <li><a href="#bots">Bots, AI-usage preferences and labels</a></li>
+          <li><a href="#withdrawal">Withdrawal</a></li>
+          <li><a href="#for-contributors">For contributors: records are public</a></li>
+          <li><a href="#models-trained">Models trained before a withdrawal</a></li>
+          <li><a href="#attribution">Attribution and authorship</a></li>
+        </ol>
+      </div>
+    </nav>
+    <article class="doc">
+  <p>consentvid datasets have no blanket licence. Each clip may be used only within the terms of
+  its own <strong>consent record</strong>: a record in the contributor’s own ATproto repository, signed
+  with that repository’s key (in manifests, the field <code>cv:consentReceipt</code>). Anyone may build a
+  dataset from public consent records; each clip may be used only within its own record’s terms.</p>
+
+  <h2 id="what-a-receipt-grants">What a consent record grants</h2>
   <ul>
     <li><strong>purposes</strong>: what it may be used for, e.g. training, evaluation, benchmarking.
-      (<code>researchOnly</code> is deprecated; older receipts that use it keep their literal meaning.)</li>
-    <li><strong>modelClasses</strong>: who may use it, e.g. academic, openWeights, commercial.
-      (<code>foundationModel</code> is deprecated; older receipts that use it keep their literal meaning.)</li>
+      (<code>researchOnly</code> is deprecated; older consent records that use it keep their literal meaning.)</li>
+    <li><strong>modelClasses</strong>: who may use it, e.g. academic, open-weights, commercial.
+      (<code>foundationModel</code> is deprecated; older consent records that use it keep their literal meaning.)</li>
     <li><strong>modalities</strong>: which signals, e.g. video, audio, transcript, face, voice.</li>
     <li><strong>expiresAt</strong>: optional end date of the permission.</li>
   </ul>
-  <p>A use is permitted only if the receipt lists <em>every</em> applicable purpose, model class and
+  <p>A use is permitted only if the consent record lists <em>every</em> applicable purpose, model class and
   modality. Anything not listed is not granted.</p>
 
   <p><strong>compensation</strong> records what the contributor said they expect. It is a
-  declaration, not a payment arrangement: ConsentVid neither brokers nor enforces payment.</p>
+  declaration, not a payment arrangement: consentvid neither brokers nor enforces payment.</p>
 
-  <h2>People in the video and age</h2>
-  <p>Every receipt states who identifiably appears (<code>peoplePresent</code>: only the
+  <h2 id="people">People in the video and age</h2>
+  <p>Every consent record states who identifiably appears (<code>peoplePresent</code>: only the
   contributor, everyone shown having agreed, or no identifiable people) and that the contributor is
   an adult able to consent (<code>adultAttested</code>). These are self-declared under the
-  contributor's key. A receipt without them is invalid. If you find a clip that contradicts its
-  declaration, for example identifiable bystanders in a clip marked <code>onlyMe</code>, stop using
-  it and report it.</p>
+  contributor’s key. A consent record without them is invalid. If you find a clip that contradicts its
+  declaration, for example identifiable bystanders in a clip marked <code>only-me</code>, stop using
+  it and report it. You can also email <a href="mailto:evangelos.kazakos@cvut.cz">evangelos.kazakos@cvut.cz</a>; until a
+  labeler service exists, such a report cannot remove a record from the contributor’s account.</p>
+  <p class="small muted">The command line, manifests and version-1 records spell these values in camelCase
+  (<code>openWeights</code>, <code>onlyMe</code>, <code>allConsented</code>, <code>noIdentifiablePeople</code>);
+  version-2 records use the kebab-case form. Both mean the same.</p>
 
-  <h2>Bots, AI-usage preferences and labels</h2>
-  <p>A receipt from an account that labels itself a bot (the <code>bot</code> self-label on its
-  profile) is not valid consent. Nor is a receipt granting training from an account whose own
+  <h2 id="bots">Bots, AI-usage preferences and labels</h2>
+  <p>A consent record from an account that labels itself a bot (the <code>bot</code> self-label on its
+  profile) is not valid consent. Nor is a consent record granting training from an account whose own
   published AI-usage preference (<code>community.lexicon.preference.ai</code>) denies training: the
-  contributor's preference wins. Clips the contributor labeled <code>porn</code>,
+  contributor’s preference wins. Clips the contributor labelled <code>porn</code>,
   <code>sexual</code>, <code>nudity</code> or <code>graphic-media</code> are left out of datasets
   unless you explicitly include them. <code>resync</code> checks all of this and drops such clips.</p>
 
-  <h2>Withdrawal</h2>
-  <p>Contributors can withdraw consent at any time by deleting the receipt (consent to processing
+  <h2 id="withdrawal">Withdrawal</h2>
+  <p>Contributors can withdraw consent at any time by deleting the consent record (consent to processing
   personal data must be withdrawable, GDPR Art. 7(3)). Before every use, and at least before each
   training run, run:</p>
-  <p><code>consentvid resync manifest.json --write manifest.clean.json</code></p>
-  <p>and use only the clips that remain. <code>resync</code> verifies each receipt against the
-  contributor's signed repository; withdrawn, expired or modified clips must be deleted from your
+  <pre tabindex="0"><code>consentvid resync manifest.json --write manifest.clean.json</code></pre>
+  <p>and use only the clips that remain. <code>resync</code> verifies each consent record against the
+  contributor’s signed repository; withdrawn, expired or modified clips must be deleted from your
   copies. Clips that <code>resync</code> could not check are dropped too.</p>
 
-  <h2>For contributors: records are public</h2>
+  <h2 id="for-contributors">For contributors: records are public</h2>
   <p>Your video and consent records are public ATproto records. Relays, Jetstream and anyone
   indexing the network copy them as you write them. Deleting a record withdraws consent, and
   well-behaved indexes drop it, but deletion is not erasure: copies made before it can persist.
-  Only the metadata you publish is in the records (title, description, tags, hashes, the storage
-  pointer and the consent terms), so publish nothing there you would not want copied. Deleting or
-  deactivating your ATproto account does <em>not</em> delete the video bytes on R2, IPFS or
+  The records contain what you enter or choose, plus what the tools measure from the file: title,
+  description, tags, languages; content hash, size, duration, width and height, file type; content
+  labels; a pointer to the video (your post, your server, or another store); your consent terms and
+  attestations; the time of signing; and your account identifier (DID). File names are never written
+  to records (a URL you supply yourself is published as written). Publish nothing there you would not
+  want copied.
+  Deleting or deactivating your ATproto account does <em>not</em> delete the video bytes on R2, IPFS or
   PeerTube: run <code>consentvid revoke &lt;video-uri&gt; --delete-bytes</code> for each video
-  first.</p>
+  first. Files on your own server and Bluesky posts are deleted with your account. IPFS copies pinned
+  by others cannot be recalled.</p>
 
-  <h2>Models trained before a withdrawal</h2>
-  <p>Withdrawal does not affect the lawfulness of use before it (GDPR Art. 7(3)). A model trained in
-  good faith on clips that were valid at a <code>resync</code> made before training stays
-  legitimate and need not be destroyed. From the moment of withdrawal, the clip may not be used
+  <h2 id="models-trained">Models trained before a withdrawal</h2>
+  <p>GDPR <a href="https://eur-lex.europa.eu/eli/reg/2016/679/oj">Art. 7(3)</a>: “The withdrawal of consent shall not affect the lawfulness of processing based on consent before its withdrawal.” Under these terms, a
+  model trained in good faith on clips that were valid at a <code>resync</code> made before training
+  stays legitimate and need not be destroyed. From the moment of withdrawal, the clip may not be used
   again: not for new training, retraining, fine-tuning, continued training from a checkpoint, or
   new evaluations. Delete it from your copies.</p>
 
-  <h2>Attribution and authorship</h2>
-  <p>Cite the dataset as given in the manifest's <code>citeAs</code>. Contributors attest, under their
+  <h2 id="attribution">Attribution and authorship</h2>
+  <p>Cite the dataset as given in the manifest’s <code>citeAs</code>. Contributors attest, under their
   signing key, that they recorded each clip or otherwise hold the rights to grant consent. If you
-  believe a clip was contributed without that right, report it to the contributor's PDS operator and
-  stop using it.</p>
+  believe a clip was contributed without that right, stop using it and report the account to its hosting
+  server or, on Bluesky, with Report account; if the account is taken down (by the host or at the relay),
+  <code>resync</code> reports its clips as unavailable and drops them. You can also email <a href="mailto:evangelos.kazakos@cvut.cz">evangelos.kazakos@cvut.cz</a>; until a
+  labeler service exists, such a report cannot remove a record from the contributor’s account.</p>
+    </article>
+  </div>
 </main>
+
+<footer class="foot">
+  <div class="wrap">
+    <p class="foot-l"><span class="wm" role="img" aria-label="consentvid"><span aria-hidden="true"><span class="w-c">consen</span><span class="tie"><svg class="chain" viewBox="0 0 34 17" aria-hidden="true" focusable="false" shape-rendering="crispEdges"><rect x="14" y="0" width="10" height="1" fill="#1A0E08"/><rect x="29" y="0" width="3" height="1" fill="#1A0E08"/><rect x="13" y="1" width="2" height="1" fill="#1A0E08"/><rect x="15" y="1" width="5" height="1" fill="#FFFFFF"/><rect x="20" y="1" width="4" height="1" fill="#FFF3D6"/><rect x="29" y="1" width="2" height="1" fill="#FFF3D6"/><rect x="31" y="1" width="2" height="1" fill="#1A0E08"/><rect x="12" y="2" width="2" height="1" fill="#1A0E08"/><rect x="14" y="2" width="1" height="1" fill="#FFFFFF"/><rect x="15" y="2" width="9" height="1" fill="#FFF3D6"/><rect x="29" y="2" width="3" height="1" fill="#FFF3D6"/><rect x="32" y="2" width="2" height="1" fill="#1A0E08"/><rect x="12" y="3" width="1" height="1" fill="#1A0E08"/><rect x="13" y="3" width="1" height="1" fill="#FFFFFF"/><rect x="14" y="3" width="2" height="1" fill="#FFF3D6"/><rect x="16" y="3" width="8" height="1" fill="#D6BE8E"/><rect x="29" y="3" width="1" height="1" fill="#D6BE8E"/><rect x="30" y="3" width="2" height="1" fill="#FFF3D6"/><rect x="32" y="3" width="1" height="1" fill="#D6BE8E"/><rect x="33" y="3" width="1" height="1" fill="#1A0E08"/><rect x="12" y="4" width="1" height="1" fill="#1A0E08"/><rect x="13" y="4" width="1" height="1" fill="#FFFFFF"/><rect x="14" y="4" width="1" height="1" fill="#FFF3D6"/><rect x="15" y="4" width="2" height="1" fill="#D6BE8E"/><rect x="29" y="4" width="1" height="1" fill="#D6BE8E"/><rect x="30" y="4" width="2" height="1" fill="#FFF3D6"/><rect x="32" y="4" width="1" height="1" fill="#D6BE8E"/><rect x="33" y="4" width="1" height="1" fill="#1A0E08"/><rect x="1" y="5" width="2" height="1" fill="#1A0E08"/><rect x="3" y="5" width="2" height="1" fill="#FFFFFF"/><rect x="10" y="5" width="2" height="1" fill="#FFF3D6"/><rect x="12" y="5" width="1" height="1" fill="#1A0E08"/><rect x="13" y="5" width="1" height="1" fill="#FFFFFF"/><rect x="14" y="5" width="1" height="1" fill="#FFF3D6"/><rect x="15" y="5" width="1" height="1" fill="#D6BE8E"/><rect x="16" y="5" width="3" height="1" fill="#FFF3D6"/><rect x="19" y="5" width="2" height="1" fill="#1A0E08"/><rect x="30" y="5" width="2" height="1" fill="#FFF3D6"/><rect x="32" y="5" width="1" height="1" fill="#D6BE8E"/><rect x="33" y="5" width="1" height="1" fill="#1A0E08"/><rect x="0" y="6" width="2" height="1" fill="#1A0E08"/><rect x="2" y="6" width="1" height="1" fill="#FFFFFF"/><rect x="3" y="6" width="2" height="1" fill="#FFF3D6"/><rect x="10" y="6" width="2" height="1" fill="#FFF3D6"/><rect x="12" y="6" width="1" height="1" fill="#1A0E08"/><rect x="13" y="6" width="1" height="1" fill="#FFFFFF"/><rect x="14" y="6" width="1" height="1" fill="#FFF3D6"/><rect x="15" y="6" width="1" height="1" fill="#D6BE8E"/><rect x="16" y="6" width="4" height="1" fill="#FFF3D6"/><rect x="20" y="6" width="2" height="1" fill="#1A0E08"/><rect x="30" y="6" width="2" height="1" fill="#FFF3D6"/><rect x="32" y="6" width="1" height="1" fill="#D6BE8E"/><rect x="33" y="6" width="1" height="1" fill="#1A0E08"/><rect x="0" y="7" width="1" height="1" fill="#1A0E08"/><rect x="1" y="7" width="1" height="1" fill="#FFFFFF"/><rect x="2" y="7" width="2" height="1" fill="#FFF3D6"/><rect x="4" y="7" width="1" height="1" fill="#D6BE8E"/><rect x="10" y="7" width="2" height="1" fill="#D6BE8E"/><rect x="12" y="7" width="1" height="1" fill="#1A0E08"/><rect x="13" y="7" width="1" height="1" fill="#FFFFFF"/><rect x="14" y="7" width="1" height="1" fill="#FFF3D6"/><rect x="15" y="7" width="3" height="1" fill="#D6BE8E"/><rect x="18" y="7" width="2" height="1" fill="#FFF3D6"/><rect x="20" y="7" width="1" height="1" fill="#D6BE8E"/><rect x="21" y="7" width="1" height="1" fill="#1A0E08"/><rect x="30" y="7" width="2" height="1" fill="#FFF3D6"/><rect x="32" y="7" width="1" height="1" fill="#D6BE8E"/><rect x="33" y="7" width="1" height="1" fill="#1A0E08"/><rect x="0" y="8" width="1" height="1" fill="#1A0E08"/><rect x="1" y="8" width="1" height="1" fill="#FFFFFF"/><rect x="2" y="8" width="1" height="1" fill="#FFF3D6"/><rect x="3" y="8" width="2" height="1" fill="#D6BE8E"/><rect x="12" y="8" width="1" height="1" fill="#1A0E08"/><rect x="13" y="8" width="2" height="1" fill="#FFF3D6"/><rect x="15" y="8" width="3" height="1" fill="#D6BE8E"/><rect x="18" y="8" width="2" height="1" fill="#FFF3D6"/><rect x="20" y="8" width="1" height="1" fill="#D6BE8E"/><rect x="21" y="8" width="1" height="1" fill="#1A0E08"/><rect x="29" y="8" width="3" height="1" fill="#FFF3D6"/><rect x="32" y="8" width="1" height="1" fill="#D6BE8E"/><rect x="33" y="8" width="1" height="1" fill="#1A0E08"/><rect x="0" y="9" width="1" height="1" fill="#1A0E08"/><rect x="1" y="9" width="1" height="1" fill="#FFFFFF"/><rect x="2" y="9" width="1" height="1" fill="#FFF3D6"/><rect x="3" y="9" width="1" height="1" fill="#D6BE8E"/><rect x="12" y="9" width="1" height="1" fill="#1A0E08"/><rect x="13" y="9" width="7" height="1" fill="#FFF3D6"/><rect x="20" y="9" width="1" height="1" fill="#D6BE8E"/><rect x="21" y="9" width="1" height="1" fill="#1A0E08"/><rect x="22" y="9" width="10" height="1" fill="#FFF3D6"/><rect x="32" y="9" width="1" height="1" fill="#D6BE8E"/><rect x="33" y="9" width="1" height="1" fill="#1A0E08"/><rect x="0" y="10" width="1" height="1" fill="#1A0E08"/><rect x="1" y="10" width="1" height="1" fill="#FFFFFF"/><rect x="2" y="10" width="1" height="1" fill="#FFF3D6"/><rect x="3" y="10" width="1" height="1" fill="#D6BE8E"/><rect x="12" y="10" width="2" height="1" fill="#1A0E08"/><rect x="14" y="10" width="6" height="1" fill="#FFF3D6"/><rect x="20" y="10" width="1" height="1" fill="#D6BE8E"/><rect x="21" y="10" width="1" height="1" fill="#1A0E08"/><rect x="22" y="10" width="10" height="1" fill="#FFF3D6"/><rect x="32" y="10" width="2" height="1" fill="#1A0E08"/><rect x="0" y="11" width="1" height="1" fill="#1A0E08"/><rect x="1" y="11" width="1" height="1" fill="#FFFFFF"/><rect x="2" y="11" width="1" height="1" fill="#FFF3D6"/><rect x="3" y="11" width="1" height="1" fill="#D6BE8E"/><rect x="13" y="11" width="2" height="1" fill="#1A0E08"/><rect x="15" y="11" width="3" height="1" fill="#D6BE8E"/><rect x="18" y="11" width="2" height="1" fill="#FFF3D6"/><rect x="20" y="11" width="1" height="1" fill="#D6BE8E"/><rect x="21" y="11" width="1" height="1" fill="#1A0E08"/><rect x="22" y="11" width="9" height="1" fill="#D6BE8E"/><rect x="31" y="11" width="2" height="1" fill="#1A0E08"/><rect x="0" y="12" width="1" height="1" fill="#1A0E08"/><rect x="1" y="12" width="2" height="1" fill="#FFF3D6"/><rect x="3" y="12" width="2" height="1" fill="#D6BE8E"/><rect x="14" y="12" width="3" height="1" fill="#1A0E08"/><rect x="17" y="12" width="3" height="1" fill="#FFF3D6"/><rect x="20" y="12" width="1" height="1" fill="#D6BE8E"/><rect x="21" y="12" width="11" height="1" fill="#1A0E08"/><rect x="0" y="13" width="1" height="1" fill="#1A0E08"/><rect x="1" y="13" width="19" height="1" fill="#FFF3D6"/><rect x="20" y="13" width="1" height="1" fill="#D6BE8E"/><rect x="21" y="13" width="1" height="1" fill="#1A0E08"/><rect x="0" y="14" width="2" height="1" fill="#1A0E08"/><rect x="2" y="14" width="18" height="1" fill="#FFF3D6"/><rect x="20" y="14" width="2" height="1" fill="#1A0E08"/><rect x="1" y="15" width="2" height="1" fill="#1A0E08"/><rect x="3" y="15" width="16" height="1" fill="#D6BE8E"/><rect x="19" y="15" width="2" height="1" fill="#1A0E08"/><rect x="2" y="16" width="18" height="1" fill="#1A0E08"/></svg><span class="tie-t">t</span><span class="tie-v">v</span></span><span class="w-v">id</span></span></span> <span class="muted">0.1.0</span></p>
+    <p>Code under Apache-2.0 · data use governed by each clip’s consent and the <a href="license.html">terms of use</a> · <a href="index.html#schemas">Schemas</a> · <a href="https://github.com/ekazakos/consentvid">Code</a> · <a href="mailto:evangelos.kazakos@cvut.cz">Contact</a></p>
+    <p class="muted">These pages load nothing from third parties and set no cookies or analytics. The consent page talks to your own server, to Bluesky (to look up your handle and show video thumbnails), and to the PLC directory (plc.directory) or your did:web domain to find your server, and keeps your sign-in in this browser. Hosted on GitHub Pages.</p>
+    <p class="muted">Type: Besley (Owen Earl), IBM Plex Sans (IBM) and Recursive (Arrow Type), self-hosted under the SIL Open Font License (<a href="fonts/SOURCES.txt">sources and licences</a>).</p>
+  </div>
+</footer>
 </body>
 </html>

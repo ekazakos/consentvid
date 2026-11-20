@@ -3,80 +3,117 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: https://video.bsky.app https://video.cdn.bsky.app; media-src blob:; connect-src 'self' https:; form-action 'none'; base-uri 'none'; object-src 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data: https://video.bsky.app https://video.cdn.bsky.app; media-src blob:; connect-src 'self' https:; form-action 'none'; base-uri 'none'; object-src 'none'">
 <meta name="referrer" content="no-referrer">
-<title>Contribute your Bluesky videos — ConsentVid</title>
-<meta name="description" content="Sign in with Bluesky, pick your video posts or upload a video, and sign an explicit, revocable consent for AI use.">
-<meta name="theme-color" content="#7c3aed">
-<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%237c3aed'/%3E%3Cstop offset='.5' stop-color='%23d946ef'/%3E%3Cstop offset='1' stop-color='%2306b6d4'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='16' fill='url(%23g)'/%3E%3Cpath d='M19 33 l9 9 l17 -19' fill='none' stroke='white' stroke-width='6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,500;1,9..144,500&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="../styles.css">
+<title>Give consent for a video · consentvid</title>
+<meta name="description" content="Sign in with Bluesky, choose your video posts or upload a video, and sign a consent record you can withdraw.">
+<meta name="theme-color" content="#A8462A" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#5C2412" media="(prefers-color-scheme: dark)">
+<link rel="preload" href="../fonts/Besley-VF.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="../fonts/IBMPlexSans-400-normal-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="../fonts/Recursive-MonoCasual.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="icon" type="image/svg+xml" href="../favicon.svg">
 <link rel="stylesheet" href="app.css">
 <script type="module" src="app.js"></script>
 </head>
 <body>
-<div class="glow" aria-hidden="true"><span class="g1"></span><span class="g2"></span><span class="g3"></span></div>
-
-<header class="top">
-  <div class="wrap">
-    <a class="brand" href="../"><b>consentvid</b><span class="dot">.org</span></a>
-    <nav class="nav">
-      <a href="../license.html">license</a>
-      <span id="who" class="who mono" hidden></span>
-      <button id="signout" class="btn ghost small" type="button" hidden>sign out</button>
+<a class="skip" href="#main">Skip to content</a>
+<header class="bar">
+  <div class="wrap bar-in">
+    <a class="mark" href="../" aria-label="consentvid"><span aria-hidden="true"><span class="w-c">consen</span><span class="tie"><svg class="chain" viewBox="0 0 34 17" aria-hidden="true" focusable="false" shape-rendering="crispEdges"><rect x="14" y="0" width="10" height="1" fill="#1A0E08"/><rect x="29" y="0" width="3" height="1" fill="#1A0E08"/><rect x="13" y="1" width="2" height="1" fill="#1A0E08"/><rect x="15" y="1" width="5" height="1" fill="#FFFFFF"/><rect x="20" y="1" width="4" height="1" fill="#FFF3D6"/><rect x="29" y="1" width="2" height="1" fill="#FFF3D6"/><rect x="31" y="1" width="2" height="1" fill="#1A0E08"/><rect x="12" y="2" width="2" height="1" fill="#1A0E08"/><rect x="14" y="2" width="1" height="1" fill="#FFFFFF"/><rect x="15" y="2" width="9" height="1" fill="#FFF3D6"/><rect x="29" y="2" width="3" height="1" fill="#FFF3D6"/><rect x="32" y="2" width="2" height="1" fill="#1A0E08"/><rect x="12" y="3" width="1" height="1" fill="#1A0E08"/><rect x="13" y="3" width="1" height="1" fill="#FFFFFF"/><rect x="14" y="3" width="2" height="1" fill="#FFF3D6"/><rect x="16" y="3" width="8" height="1" fill="#D6BE8E"/><rect x="29" y="3" width="1" height="1" fill="#D6BE8E"/><rect x="30" y="3" width="2" height="1" fill="#FFF3D6"/><rect x="32" y="3" width="1" height="1" fill="#D6BE8E"/><rect x="33" y="3" width="1" height="1" fill="#1A0E08"/><rect x="12" y="4" width="1" height="1" fill="#1A0E08"/><rect x="13" y="4" width="1" height="1" fill="#FFFFFF"/><rect x="14" y="4" width="1" height="1" fill="#FFF3D6"/><rect x="15" y="4" width="2" height="1" fill="#D6BE8E"/><rect x="29" y="4" width="1" height="1" fill="#D6BE8E"/><rect x="30" y="4" width="2" height="1" fill="#FFF3D6"/><rect x="32" y="4" width="1" height="1" fill="#D6BE8E"/><rect x="33" y="4" width="1" height="1" fill="#1A0E08"/><rect x="1" y="5" width="2" height="1" fill="#1A0E08"/><rect x="3" y="5" width="2" height="1" fill="#FFFFFF"/><rect x="10" y="5" width="2" height="1" fill="#FFF3D6"/><rect x="12" y="5" width="1" height="1" fill="#1A0E08"/><rect x="13" y="5" width="1" height="1" fill="#FFFFFF"/><rect x="14" y="5" width="1" height="1" fill="#FFF3D6"/><rect x="15" y="5" width="1" height="1" fill="#D6BE8E"/><rect x="16" y="5" width="3" height="1" fill="#FFF3D6"/><rect x="19" y="5" width="2" height="1" fill="#1A0E08"/><rect x="30" y="5" width="2" height="1" fill="#FFF3D6"/><rect x="32" y="5" width="1" height="1" fill="#D6BE8E"/><rect x="33" y="5" width="1" height="1" fill="#1A0E08"/><rect x="0" y="6" width="2" height="1" fill="#1A0E08"/><rect x="2" y="6" width="1" height="1" fill="#FFFFFF"/><rect x="3" y="6" width="2" height="1" fill="#FFF3D6"/><rect x="10" y="6" width="2" height="1" fill="#FFF3D6"/><rect x="12" y="6" width="1" height="1" fill="#1A0E08"/><rect x="13" y="6" width="1" height="1" fill="#FFFFFF"/><rect x="14" y="6" width="1" height="1" fill="#FFF3D6"/><rect x="15" y="6" width="1" height="1" fill="#D6BE8E"/><rect x="16" y="6" width="4" height="1" fill="#FFF3D6"/><rect x="20" y="6" width="2" height="1" fill="#1A0E08"/><rect x="30" y="6" width="2" height="1" fill="#FFF3D6"/><rect x="32" y="6" width="1" height="1" fill="#D6BE8E"/><rect x="33" y="6" width="1" height="1" fill="#1A0E08"/><rect x="0" y="7" width="1" height="1" fill="#1A0E08"/><rect x="1" y="7" width="1" height="1" fill="#FFFFFF"/><rect x="2" y="7" width="2" height="1" fill="#FFF3D6"/><rect x="4" y="7" width="1" height="1" fill="#D6BE8E"/><rect x="10" y="7" width="2" height="1" fill="#D6BE8E"/><rect x="12" y="7" width="1" height="1" fill="#1A0E08"/><rect x="13" y="7" width="1" height="1" fill="#FFFFFF"/><rect x="14" y="7" width="1" height="1" fill="#FFF3D6"/><rect x="15" y="7" width="3" height="1" fill="#D6BE8E"/><rect x="18" y="7" width="2" height="1" fill="#FFF3D6"/><rect x="20" y="7" width="1" height="1" fill="#D6BE8E"/><rect x="21" y="7" width="1" height="1" fill="#1A0E08"/><rect x="30" y="7" width="2" height="1" fill="#FFF3D6"/><rect x="32" y="7" width="1" height="1" fill="#D6BE8E"/><rect x="33" y="7" width="1" height="1" fill="#1A0E08"/><rect x="0" y="8" width="1" height="1" fill="#1A0E08"/><rect x="1" y="8" width="1" height="1" fill="#FFFFFF"/><rect x="2" y="8" width="1" height="1" fill="#FFF3D6"/><rect x="3" y="8" width="2" height="1" fill="#D6BE8E"/><rect x="12" y="8" width="1" height="1" fill="#1A0E08"/><rect x="13" y="8" width="2" height="1" fill="#FFF3D6"/><rect x="15" y="8" width="3" height="1" fill="#D6BE8E"/><rect x="18" y="8" width="2" height="1" fill="#FFF3D6"/><rect x="20" y="8" width="1" height="1" fill="#D6BE8E"/><rect x="21" y="8" width="1" height="1" fill="#1A0E08"/><rect x="29" y="8" width="3" height="1" fill="#FFF3D6"/><rect x="32" y="8" width="1" height="1" fill="#D6BE8E"/><rect x="33" y="8" width="1" height="1" fill="#1A0E08"/><rect x="0" y="9" width="1" height="1" fill="#1A0E08"/><rect x="1" y="9" width="1" height="1" fill="#FFFFFF"/><rect x="2" y="9" width="1" height="1" fill="#FFF3D6"/><rect x="3" y="9" width="1" height="1" fill="#D6BE8E"/><rect x="12" y="9" width="1" height="1" fill="#1A0E08"/><rect x="13" y="9" width="7" height="1" fill="#FFF3D6"/><rect x="20" y="9" width="1" height="1" fill="#D6BE8E"/><rect x="21" y="9" width="1" height="1" fill="#1A0E08"/><rect x="22" y="9" width="10" height="1" fill="#FFF3D6"/><rect x="32" y="9" width="1" height="1" fill="#D6BE8E"/><rect x="33" y="9" width="1" height="1" fill="#1A0E08"/><rect x="0" y="10" width="1" height="1" fill="#1A0E08"/><rect x="1" y="10" width="1" height="1" fill="#FFFFFF"/><rect x="2" y="10" width="1" height="1" fill="#FFF3D6"/><rect x="3" y="10" width="1" height="1" fill="#D6BE8E"/><rect x="12" y="10" width="2" height="1" fill="#1A0E08"/><rect x="14" y="10" width="6" height="1" fill="#FFF3D6"/><rect x="20" y="10" width="1" height="1" fill="#D6BE8E"/><rect x="21" y="10" width="1" height="1" fill="#1A0E08"/><rect x="22" y="10" width="10" height="1" fill="#FFF3D6"/><rect x="32" y="10" width="2" height="1" fill="#1A0E08"/><rect x="0" y="11" width="1" height="1" fill="#1A0E08"/><rect x="1" y="11" width="1" height="1" fill="#FFFFFF"/><rect x="2" y="11" width="1" height="1" fill="#FFF3D6"/><rect x="3" y="11" width="1" height="1" fill="#D6BE8E"/><rect x="13" y="11" width="2" height="1" fill="#1A0E08"/><rect x="15" y="11" width="3" height="1" fill="#D6BE8E"/><rect x="18" y="11" width="2" height="1" fill="#FFF3D6"/><rect x="20" y="11" width="1" height="1" fill="#D6BE8E"/><rect x="21" y="11" width="1" height="1" fill="#1A0E08"/><rect x="22" y="11" width="9" height="1" fill="#D6BE8E"/><rect x="31" y="11" width="2" height="1" fill="#1A0E08"/><rect x="0" y="12" width="1" height="1" fill="#1A0E08"/><rect x="1" y="12" width="2" height="1" fill="#FFF3D6"/><rect x="3" y="12" width="2" height="1" fill="#D6BE8E"/><rect x="14" y="12" width="3" height="1" fill="#1A0E08"/><rect x="17" y="12" width="3" height="1" fill="#FFF3D6"/><rect x="20" y="12" width="1" height="1" fill="#D6BE8E"/><rect x="21" y="12" width="11" height="1" fill="#1A0E08"/><rect x="0" y="13" width="1" height="1" fill="#1A0E08"/><rect x="1" y="13" width="19" height="1" fill="#FFF3D6"/><rect x="20" y="13" width="1" height="1" fill="#D6BE8E"/><rect x="21" y="13" width="1" height="1" fill="#1A0E08"/><rect x="0" y="14" width="2" height="1" fill="#1A0E08"/><rect x="2" y="14" width="18" height="1" fill="#FFF3D6"/><rect x="20" y="14" width="2" height="1" fill="#1A0E08"/><rect x="1" y="15" width="2" height="1" fill="#1A0E08"/><rect x="3" y="15" width="16" height="1" fill="#D6BE8E"/><rect x="19" y="15" width="2" height="1" fill="#1A0E08"/><rect x="2" y="16" width="18" height="1" fill="#1A0E08"/></svg><span class="tie-t">t</span><span class="tie-v">v</span></span><span class="w-v">id</span></span></a>
+    <nav class="nav" aria-label="Site">
+      <a href="../">About</a>
+      <a href="../license.html">Terms</a>
+      <a href="https://github.com/ekazakos/consentvid">Code</a>
     </nav>
+    <div class="acct">
+      <span id="who" class="who mono" hidden></span>
+      <button id="signout" class="btn ghost small" type="button" hidden>Sign out</button>
+    </div>
   </div>
 </header>
 
-<main class="wrap app">
-  <h1>Contribute your <span class="grad">Bluesky videos</span></h1>
-  <p class="lede">Pick videos you posted on Bluesky, or upload one from your computer without posting it, and sign an
-    explicit consent saying how they may be used for AI. Your videos stay on your own Bluesky server: withdraw here, or
-    delete the post, and the video leaves every dataset.</p>
+<main id="main" class="app">
+  <div class="wrap app-msgs">
+    <noscript><p class="notice error">This page needs JavaScript: it signs your consent records in your browser.</p></noscript>
+    <div id="notice" class="notice" role="status" aria-live="polite"></div>
+  </div>
 
-  <noscript><p class="notice error">This page needs JavaScript: it signs your consent records in your browser.</p></noscript>
-  <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+  <div class="wrap app-grid">
+    <div class="app-intro">
+      <h1 class="app-h">Give consent for a video</h1>
+      <p class="lede">Choose videos you posted on Bluesky, or upload a file without posting it, and sign a consent record,
+        kept in your own account, stating how they may be used. Withdraw here at any time; for a Bluesky post, deleting
+        the post also works.</p>
+      <p class="lede-2">Withdrawing stops new use. It does not reach models already trained, and existing copies are not
+        deleted automatically: the terms require dataset users to delete withdrawn clips when they next run resync.</p>
+    </div>
 
-  <section id="signin" class="card" hidden aria-labelledby="signin-h">
-    <h2 id="signin-h">Sign in with Bluesky</h2>
-    <p>You'll be sent to your own server to approve. ConsentVid only asks to create and delete
-      <span class="mono">org.consentvid.*</span> records in your account and to upload video files to it. It can't post,
-      follow or read your private data.</p>
-    <form id="signin-form" class="row">
-      <label class="grow">
-        <span class="sr-only">Your handle</span>
-        <input id="handle" name="handle" type="text" autocomplete="username" spellcheck="false" autocapitalize="none"
-               placeholder="you.bsky.social" required>
-      </label>
-      <button class="btn primary" type="submit">Sign in</button>
-    </form>
-    <p id="deeplink-note" class="muted small" hidden></p>
-  </section>
+    <ol class="rail" aria-label="Steps on this page">
+      <li class="r1" aria-current="step"><b>1</b><span>Sign in</span></li>
+      <li class="r2"><b>2</b><span>Choose videos</span></li>
+      <li class="r3"><b>3</b><span>Your consent</span></li>
+      <li class="r4"><b>4</b><span>Review and sign</span></li>
+    </ol>
 
-  <section id="blocked" class="card" hidden>
-    <h2>Consent isn't possible from this account</h2>
-    <p id="blocked-why"></p>
-  </section>
+    <section id="signin" class="card signin" hidden aria-labelledby="signin-h">
+      <h2 id="signin-h">Sign in with Bluesky</h2>
+      <form id="signin-form" class="si-form">
+        <label for="handle" class="si-label">Your Bluesky handle</label>
+        <div class="si-row">
+          <span class="si-at" aria-hidden="true">@</span>
+          <input id="handle" name="handle" type="text" autocomplete="username" spellcheck="false" autocapitalize="none"
+                 autocorrect="off" enterkeyhint="go" placeholder="you.bsky.social" required>
+          <button class="btn primary" type="submit">Sign in</button>
+        </div>
+      </form>
+      <p id="deeplink-note" class="muted small" hidden></p>
+      <p class="si-text">You’ll be sent to your own Bluesky server to approve. This page asks only for permission to
+        add and remove its own consent and video records in your account, and to upload video files to it.</p>
+      <details class="tech">
+        <summary id="scope-h">The exact permission</summary>
+        <pre class="scope" aria-labelledby="scope-h"><code><span class="sc">atproto</span><span class="sp"> </span><span class="sc">repo:org.consentvid.videoV2<wbr>?action=create<wbr>&amp;action=delete</span><span class="sp"> </span><span class="sc">repo:org.consentvid.consentV2<wbr>?action=create<wbr>&amp;action=delete</span><span class="sp"> </span><span class="sc">blob:video/*</span></code></pre>
+        <p class="small">If your server cannot grant these, the page asks you first before requesting the broader
+          <span class="mono">atproto transition:generic</span>, which would let an app post, follow or delete for you.
+          This page writes only <span class="mono">org.consentvid.*</span> records
+          (<a href="https://github.com/ekazakos/consentvid/blob/main/app/src/scopes.js">app/src/scopes.js</a>).</p>
+      </details>
+    </section>
 
-  <section id="contribute" hidden>
-    <div class="card">
-      <h2>1. Choose videos</h2>
-      <div class="tabs" role="tablist" aria-label="Where the videos come from">
-        <button id="tab-posts" role="tab" type="button" aria-selected="true" aria-controls="panel-posts">My Bluesky posts</button>
-        <button id="tab-upload" role="tab" type="button" aria-selected="false" aria-controls="panel-upload">Upload from my computer</button>
+    <aside class="si-side" aria-labelledby="side-h">
+      <p class="side-h" id="side-h">What signing writes to your account</p>
+      <div class="mini">
+        <div class="rec rec-v"><code class="nsid"><span>org.consentvid.</span>videoV2</code><span class="rec-d">title, description, tags, languages; content hash, size, duration, width and height, file type; content labels; a pointer to the video</span></div>
+        <div class="rec rec-c"><code class="nsid"><span>org.consentvid.</span>consentV2</code><span class="rec-d">your consent terms and attestations; the time of signing</span></div>
       </div>
-      <div id="panel-posts" role="tabpanel" aria-labelledby="tab-posts">
-        <p class="muted small">Your video posts on Bluesky. Ones already in ConsentVid can be withdrawn.</p>
+      <p class="small">Both are public and carry your account’s identifier. File names are never written.</p>
+    </aside>
+
+    <section id="blocked" class="card blocked" hidden>
+      <h2>Consent isn’t possible from this account</h2>
+      <p id="blocked-why"></p>
+    </section>
+  </div>
+
+  <section id="contribute" class="wrap contribute" hidden>
+    <div class="card sheet">
+      <h2 class="sheet-h"><span class="n">2</span> Choose videos</h2>
+      <div class="tabs" role="group" aria-label="Where the videos come from">
+        <button id="tab-posts" type="button" aria-pressed="true" aria-controls="panel-posts">My Bluesky posts</button>
+        <button id="tab-upload" type="button" aria-pressed="false" aria-controls="panel-upload">Upload from my computer</button>
+      </div>
+      <div id="panel-posts" role="group" aria-labelledby="tab-posts">
+        <p class="muted small">Your video posts on Bluesky. Ones already in consentvid can be withdrawn.</p>
         <ul id="posts" class="posts"></ul>
         <p id="posts-empty" class="muted" hidden>No video posts found in your account.</p>
         <button id="more" class="btn ghost small" type="button" hidden>Load older posts</button>
       </div>
-      <div id="panel-upload" role="tabpanel" aria-labelledby="tab-upload" hidden>
-        <p class="muted small">The video is stored on your own Bluesky server, not posted: it won't appear in your feed.
-          Up to 300 MB per file (some servers accept less). Location, device and other identifying metadata is removed
-          in your browser before upload (MP4 and MOV; nothing is re-encoded). Withdrawing deletes the file again.</p>
+      <div id="panel-upload" role="group" aria-labelledby="tab-upload" hidden>
+        <p class="muted small">The video is stored on your own Bluesky server and is not posted to your feed. It is still
+          public: anyone can download it from your server, and datasets link to it. Up to 300 MB each; some servers
+          accept less. For MP4 and MOV files, location, device and other identifying metadata is removed in your browser
+          before upload, without re-encoding; what the picture and sound show stays. Withdrawing deletes the records,
+          after which your server can delete the file.</p>
         <label id="drop" class="drop">
           <input id="file" type="file" accept="video/*" multiple class="sr-only">
           <span><b>Choose video files</b> or drop them here</span>
@@ -85,15 +122,15 @@
       </div>
     </div>
 
-    <div id="others-card" class="card" hidden>
-      <h2>Your uploaded videos</h2>
-      <p class="muted small">Videos in ConsentVid that aren't Bluesky posts (uploaded here or with the command-line tool).</p>
+    <div id="others-card" class="card sheet" hidden>
+      <h2 class="sheet-h">Your uploaded videos</h2>
+      <p class="muted small">Videos in consentvid that aren’t Bluesky posts (uploaded here or with the command-line tool).</p>
       <ul id="others" class="posts"></ul>
     </div>
 
-    <form id="terms" class="card" novalidate>
-      <h2>2. Your consent</h2>
-      <p class="muted small">Nothing is pre-selected: you grant only what you tick. You can withdraw any time.</p>
+    <form id="terms" class="card sheet" novalidate>
+      <h2 class="sheet-h"><span class="n">3</span> Your consent</h2>
+      <p class="muted small">No permission is ticked for you. End date, compensation and rights basis start at the defaults shown; check them. You can withdraw any time.</p>
 
       <fieldset>
         <legend>What may be used</legend>
@@ -111,9 +148,9 @@
         <legend>Who appears or is heard in the video</legend>
         <div class="choices" data-field="peoplePresent" data-single></div>
       </fieldset>
-      <fieldset>
-        <legend>More</legend>
-        <label>Expiry
+      <fieldset class="more">
+        <legend>Duration, compensation and rights</legend>
+        <label>End date
           <select id="expiry">
             <option value="">No expiry (until you withdraw)</option>
             <option value="1y">1 year</option>
@@ -136,7 +173,7 @@
         </div>
       </fieldset>
       <fieldset>
-        <legend>Attestations (signed with your account)</legend>
+        <legend>You confirm (signed with your account)</legend>
         <label class="check"><input type="checkbox" id="attest-authorship">
           I recorded these videos myself, or otherwise hold the rights to them, and may grant this consent.</label>
         <label class="check"><input type="checkbox" id="attest-adult">
@@ -144,20 +181,34 @@
       </fieldset>
     </form>
 
-    <div class="card summary">
-      <h2>3. Review and sign</h2>
-      <div id="summary" class="muted">Choose at least one video and your terms.</div>
+    <div class="card sheet summary">
+      <h2 class="sheet-h"><span class="n">4</span> Review and sign</h2>
+      <div id="summary">Choose at least one video and your terms.</div>
       <ul id="errors" class="errors" hidden></ul>
       <label class="check" id="keep-metadata-row" hidden><input type="checkbox" id="keep-metadata">
-        Include videos whose identifying metadata can't be removed here, as they are (not recommended).</label>
+        Include anyway: keep videos unchanged when their identifying metadata can’t be removed here. Not recommended.</label>
       <button id="sign" class="btn primary" type="button" disabled>Sign consent</button>
       <ol id="log" class="log" aria-live="polite"></ol>
+      <details id="sum-side" class="sum-side" open>
+        <summary class="side-h">What will be written, per video</summary>
+        <div class="mini">
+          <div class="rec rec-v"><code class="nsid"><span>org.consentvid.</span>videoV2</code><span class="rec-d">title, description, tags, languages; content hash, size, duration, width and height, file type; content labels; a pointer to the video</span></div>
+          <div class="rec rec-c"><code class="nsid"><span>org.consentvid.</span>consentV2</code><span class="rec-d">your consent terms and attestations; the time of signing</span></div>
+        </div>
+        <p class="small">Both are public and carry your account’s identifier. File names are never written.</p>
+      </details>
     </div>
   </section>
 
-  <p class="muted small foot">Your consent is a public, signed record in your own Bluesky account
-    (<span class="mono">org.consentvid.consentV2</span>), readable by anyone. No personal data beyond what your posts
-    already show is published. See the <a href="../license.html">contributor license</a>.</p>
 </main>
+
+<footer class="foot">
+  <div class="wrap">
+    <p class="foot-l"><span class="wm" role="img" aria-label="consentvid"><span aria-hidden="true"><span class="w-c">consen</span><span class="tie"><svg class="chain" viewBox="0 0 34 17" aria-hidden="true" focusable="false" shape-rendering="crispEdges"><rect x="14" y="0" width="10" height="1" fill="#1A0E08"/><rect x="29" y="0" width="3" height="1" fill="#1A0E08"/><rect x="13" y="1" width="2" height="1" fill="#1A0E08"/><rect x="15" y="1" width="5" height="1" fill="#FFFFFF"/><rect x="20" y="1" width="4" height="1" fill="#FFF3D6"/><rect x="29" y="1" width="2" height="1" fill="#FFF3D6"/><rect x="31" y="1" width="2" height="1" fill="#1A0E08"/><rect x="12" y="2" width="2" height="1" fill="#1A0E08"/><rect x="14" y="2" width="1" height="1" fill="#FFFFFF"/><rect x="15" y="2" width="9" height="1" fill="#FFF3D6"/><rect x="29" y="2" width="3" height="1" fill="#FFF3D6"/><rect x="32" y="2" width="2" height="1" fill="#1A0E08"/><rect x="12" y="3" width="1" height="1" fill="#1A0E08"/><rect x="13" y="3" width="1" height="1" fill="#FFFFFF"/><rect x="14" y="3" width="2" height="1" fill="#FFF3D6"/><rect x="16" y="3" width="8" height="1" fill="#D6BE8E"/><rect x="29" y="3" width="1" height="1" fill="#D6BE8E"/><rect x="30" y="3" width="2" height="1" fill="#FFF3D6"/><rect x="32" y="3" width="1" height="1" fill="#D6BE8E"/><rect x="33" y="3" width="1" height="1" fill="#1A0E08"/><rect x="12" y="4" width="1" height="1" fill="#1A0E08"/><rect x="13" y="4" width="1" height="1" fill="#FFFFFF"/><rect x="14" y="4" width="1" height="1" fill="#FFF3D6"/><rect x="15" y="4" width="2" height="1" fill="#D6BE8E"/><rect x="29" y="4" width="1" height="1" fill="#D6BE8E"/><rect x="30" y="4" width="2" height="1" fill="#FFF3D6"/><rect x="32" y="4" width="1" height="1" fill="#D6BE8E"/><rect x="33" y="4" width="1" height="1" fill="#1A0E08"/><rect x="1" y="5" width="2" height="1" fill="#1A0E08"/><rect x="3" y="5" width="2" height="1" fill="#FFFFFF"/><rect x="10" y="5" width="2" height="1" fill="#FFF3D6"/><rect x="12" y="5" width="1" height="1" fill="#1A0E08"/><rect x="13" y="5" width="1" height="1" fill="#FFFFFF"/><rect x="14" y="5" width="1" height="1" fill="#FFF3D6"/><rect x="15" y="5" width="1" height="1" fill="#D6BE8E"/><rect x="16" y="5" width="3" height="1" fill="#FFF3D6"/><rect x="19" y="5" width="2" height="1" fill="#1A0E08"/><rect x="30" y="5" width="2" height="1" fill="#FFF3D6"/><rect x="32" y="5" width="1" height="1" fill="#D6BE8E"/><rect x="33" y="5" width="1" height="1" fill="#1A0E08"/><rect x="0" y="6" width="2" height="1" fill="#1A0E08"/><rect x="2" y="6" width="1" height="1" fill="#FFFFFF"/><rect x="3" y="6" width="2" height="1" fill="#FFF3D6"/><rect x="10" y="6" width="2" height="1" fill="#FFF3D6"/><rect x="12" y="6" width="1" height="1" fill="#1A0E08"/><rect x="13" y="6" width="1" height="1" fill="#FFFFFF"/><rect x="14" y="6" width="1" height="1" fill="#FFF3D6"/><rect x="15" y="6" width="1" height="1" fill="#D6BE8E"/><rect x="16" y="6" width="4" height="1" fill="#FFF3D6"/><rect x="20" y="6" width="2" height="1" fill="#1A0E08"/><rect x="30" y="6" width="2" height="1" fill="#FFF3D6"/><rect x="32" y="6" width="1" height="1" fill="#D6BE8E"/><rect x="33" y="6" width="1" height="1" fill="#1A0E08"/><rect x="0" y="7" width="1" height="1" fill="#1A0E08"/><rect x="1" y="7" width="1" height="1" fill="#FFFFFF"/><rect x="2" y="7" width="2" height="1" fill="#FFF3D6"/><rect x="4" y="7" width="1" height="1" fill="#D6BE8E"/><rect x="10" y="7" width="2" height="1" fill="#D6BE8E"/><rect x="12" y="7" width="1" height="1" fill="#1A0E08"/><rect x="13" y="7" width="1" height="1" fill="#FFFFFF"/><rect x="14" y="7" width="1" height="1" fill="#FFF3D6"/><rect x="15" y="7" width="3" height="1" fill="#D6BE8E"/><rect x="18" y="7" width="2" height="1" fill="#FFF3D6"/><rect x="20" y="7" width="1" height="1" fill="#D6BE8E"/><rect x="21" y="7" width="1" height="1" fill="#1A0E08"/><rect x="30" y="7" width="2" height="1" fill="#FFF3D6"/><rect x="32" y="7" width="1" height="1" fill="#D6BE8E"/><rect x="33" y="7" width="1" height="1" fill="#1A0E08"/><rect x="0" y="8" width="1" height="1" fill="#1A0E08"/><rect x="1" y="8" width="1" height="1" fill="#FFFFFF"/><rect x="2" y="8" width="1" height="1" fill="#FFF3D6"/><rect x="3" y="8" width="2" height="1" fill="#D6BE8E"/><rect x="12" y="8" width="1" height="1" fill="#1A0E08"/><rect x="13" y="8" width="2" height="1" fill="#FFF3D6"/><rect x="15" y="8" width="3" height="1" fill="#D6BE8E"/><rect x="18" y="8" width="2" height="1" fill="#FFF3D6"/><rect x="20" y="8" width="1" height="1" fill="#D6BE8E"/><rect x="21" y="8" width="1" height="1" fill="#1A0E08"/><rect x="29" y="8" width="3" height="1" fill="#FFF3D6"/><rect x="32" y="8" width="1" height="1" fill="#D6BE8E"/><rect x="33" y="8" width="1" height="1" fill="#1A0E08"/><rect x="0" y="9" width="1" height="1" fill="#1A0E08"/><rect x="1" y="9" width="1" height="1" fill="#FFFFFF"/><rect x="2" y="9" width="1" height="1" fill="#FFF3D6"/><rect x="3" y="9" width="1" height="1" fill="#D6BE8E"/><rect x="12" y="9" width="1" height="1" fill="#1A0E08"/><rect x="13" y="9" width="7" height="1" fill="#FFF3D6"/><rect x="20" y="9" width="1" height="1" fill="#D6BE8E"/><rect x="21" y="9" width="1" height="1" fill="#1A0E08"/><rect x="22" y="9" width="10" height="1" fill="#FFF3D6"/><rect x="32" y="9" width="1" height="1" fill="#D6BE8E"/><rect x="33" y="9" width="1" height="1" fill="#1A0E08"/><rect x="0" y="10" width="1" height="1" fill="#1A0E08"/><rect x="1" y="10" width="1" height="1" fill="#FFFFFF"/><rect x="2" y="10" width="1" height="1" fill="#FFF3D6"/><rect x="3" y="10" width="1" height="1" fill="#D6BE8E"/><rect x="12" y="10" width="2" height="1" fill="#1A0E08"/><rect x="14" y="10" width="6" height="1" fill="#FFF3D6"/><rect x="20" y="10" width="1" height="1" fill="#D6BE8E"/><rect x="21" y="10" width="1" height="1" fill="#1A0E08"/><rect x="22" y="10" width="10" height="1" fill="#FFF3D6"/><rect x="32" y="10" width="2" height="1" fill="#1A0E08"/><rect x="0" y="11" width="1" height="1" fill="#1A0E08"/><rect x="1" y="11" width="1" height="1" fill="#FFFFFF"/><rect x="2" y="11" width="1" height="1" fill="#FFF3D6"/><rect x="3" y="11" width="1" height="1" fill="#D6BE8E"/><rect x="13" y="11" width="2" height="1" fill="#1A0E08"/><rect x="15" y="11" width="3" height="1" fill="#D6BE8E"/><rect x="18" y="11" width="2" height="1" fill="#FFF3D6"/><rect x="20" y="11" width="1" height="1" fill="#D6BE8E"/><rect x="21" y="11" width="1" height="1" fill="#1A0E08"/><rect x="22" y="11" width="9" height="1" fill="#D6BE8E"/><rect x="31" y="11" width="2" height="1" fill="#1A0E08"/><rect x="0" y="12" width="1" height="1" fill="#1A0E08"/><rect x="1" y="12" width="2" height="1" fill="#FFF3D6"/><rect x="3" y="12" width="2" height="1" fill="#D6BE8E"/><rect x="14" y="12" width="3" height="1" fill="#1A0E08"/><rect x="17" y="12" width="3" height="1" fill="#FFF3D6"/><rect x="20" y="12" width="1" height="1" fill="#D6BE8E"/><rect x="21" y="12" width="11" height="1" fill="#1A0E08"/><rect x="0" y="13" width="1" height="1" fill="#1A0E08"/><rect x="1" y="13" width="19" height="1" fill="#FFF3D6"/><rect x="20" y="13" width="1" height="1" fill="#D6BE8E"/><rect x="21" y="13" width="1" height="1" fill="#1A0E08"/><rect x="0" y="14" width="2" height="1" fill="#1A0E08"/><rect x="2" y="14" width="18" height="1" fill="#FFF3D6"/><rect x="20" y="14" width="2" height="1" fill="#1A0E08"/><rect x="1" y="15" width="2" height="1" fill="#1A0E08"/><rect x="3" y="15" width="16" height="1" fill="#D6BE8E"/><rect x="19" y="15" width="2" height="1" fill="#1A0E08"/><rect x="2" y="16" width="18" height="1" fill="#1A0E08"/></svg><span class="tie-t">t</span><span class="tie-v">v</span></span><span class="w-v">id</span></span></span></p>
+    <p>Code under Apache-2.0 · data use governed by each clip’s consent and the <a href="../license.html">terms of use</a> · <a href="../#schemas">Schemas</a> · <a href="https://github.com/ekazakos/consentvid">Code</a> · <a href="mailto:evangelos.kazakos@cvut.cz">Contact</a></p>
+    <p class="muted">Your consent is a public, signed record in your own account, readable by anyone. Anyone can build a dataset from public consent records, and consentvid does not choose who does. Nothing technical enforces your terms; dataset builders are bound by the terms of use.</p>
+    <p class="muted">This page talks to your own server, to Bluesky’s public API and video CDN, and to the PLC directory (plc.directory) or your did:web domain to find your server.</p>
+  </div>
+</footer>
 </body>
 </html>

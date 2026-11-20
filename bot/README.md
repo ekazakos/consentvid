@@ -4,7 +4,7 @@ A Cloudflare Worker that replies, once, to Bluesky video posts that ask for it.
 The reply links to the consent page for that exact video:
 `https://consentvid.org/app/?post=<at-uri>`.
 
-**Status: built and tested, not deployed.** It ships with `DRY_RUN = "true"`.
+**Status: deployed** as @consentvid.org (`DRY_RUN = "false"` in wrangler.toml). Set it to "true" to run without posting.
 
 ## What it does
 

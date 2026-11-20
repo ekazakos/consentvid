@@ -4,7 +4,7 @@
 // one applyWrites commit per video. "Upload from my computer" strips the
 // file's identifying metadata in the browser (MP4/MOV), uploads it as a blob
 // to the user's own PDS (no post) and writes videoV2 (#pdsBlobRef) +
-// consentV2 the same way. Everything runs in the browser: no ConsentVid
+// consentV2 the same way. Everything runs in the browser: no consentvid
 // server sees a token or a video.
 
 import { BrowserOAuthClient, buildAtprotoLoopbackClientMetadata } from '@atproto/oauth-client-browser'
@@ -39,35 +39,13 @@ import {
   videoErrors,
   withdrawBody,
 } from './records.js'
+import { LABELS } from './labels.js'
 import { FALLBACK_SCOPE, SCOPE } from './scopes.js'
+import { summaryLines } from './summary.js'
 
 const HANDLE_RESOLVER = 'https://public.api.bsky.app'
 const POST_PAGES_FIRST = 3 // listRecords pages read before showing the list
 const MAX_BLOB_BYTES = 1024 * 1024 * 1024
-
-const LABELS = {
-  modalities: {
-    video: 'The picture',
-    audio: 'The sound',
-    transcript: 'A transcript of the speech',
-    face: 'Identifiable faces (e.g. face recognition)',
-    voice: 'Identifiable voices (e.g. voice cloning)',
-  },
-  purposes: { training: 'Training AI models', evaluation: 'Evaluating models', benchmarking: 'Public benchmarks' },
-  modelClasses: { academic: 'Academic research', 'open-weights': 'Open-weights models', commercial: 'Commercial use' },
-  peoplePresent: {
-    'only-me': 'Only me',
-    'all-consented': 'Other people too, and every one of them agreed to this use',
-    'no-identifiable-people': 'No identifiable face or voice (e.g. hands only, scenery)',
-  },
-  compensation: { none: 'None', 'credit-only': 'Credit only', monetary: 'Payment' },
-  rightsBasis: {
-    'own-recording': 'I recorded it',
-    licensed: 'Licensed from the person who recorded it',
-    'other-rights-holder': 'Other documented rights',
-  },
-  labels: { porn: 'Porn', sexual: 'Sexual', nudity: 'Nudity', 'graphic-media': 'Graphic media' },
-}
 
 // ------------------------------------------------------------- helpers ----
 
@@ -89,8 +67,15 @@ function notice(text, kind = '') {
   const n = $('notice')
   n.textContent = text
   n.className = `notice ${kind}`
-  n.hidden = !text
+  // On phones the box is capped in height; when its text scrolls, it must be reachable by keyboard.
+  n.tabIndex = n.scrollHeight > n.clientHeight ? 0 : -1
 }
+
+// An 'ok' notice is cleared by the user's next action (it never hides an error).
+function clearOkNotice() {
+  if ($('notice').classList.contains('ok')) notice('')
+}
+for (const type of ['click', 'input', 'keydown']) document.addEventListener(type, clearOkNotice, { capture: true })
 
 function log(text, kind = '') {
   $('log').append(el('li', { class: kind }, text))
@@ -168,7 +153,7 @@ async function listAll(collection, maxPages = 20) {
     if (!cursor || !(page.records || []).length || seen.has(cursor)) return out
     seen.add(cursor)
   }
-  throw new Error(`more than ${maxPages} pages of ${collection}`)
+  throw new Error(`your account has more ${collection} records than this page reads (${maxPages * 100})`)
 }
 
 // ---------------------------------------------------------------- OAuth ----
@@ -200,8 +185,9 @@ async function signIn(handle, scope = SCOPE) {
     if (scope === SCOPE && /invalid_scope/i.test(String(e && e.message))) {
       // The user decides: never widen the permission silently.
       notice(
-        'Your server does not support fine-grained permissions yet. You can sign in with its broader ' +
-          '“generic” permission instead; ConsentVid will still only write org.consentvid.* records.',
+        'Your server does not support fine-grained permissions yet. You can sign in with its broader permission ' +
+          '(atproto transition:generic) instead. That permission would technically let an app post, follow or ' +
+          "delete on your behalf; this page's code writes only org.consentvid.* records.",
       )
       $('notice').append(
         ' ',
@@ -344,41 +330,49 @@ function renderPosts() {
       const contribution = state.contributions.get(post.uri)
       const text = (post.value.text || '').trim() || '(no text)'
       const date = (post.value.createdAt || '').slice(0, 10)
-      let control
+      let withdrawBtn = null
       if (contribution) {
-        control = el(
+        withdrawBtn = el(
           'button',
-          { class: 'btn danger small', type: 'button', onclick: (e) => withdraw(post, contribution, e.currentTarget) },
+          {
+            class: 'btn danger small',
+            type: 'button',
+            'aria-label': `Withdraw: ${text.slice(0, 80)}`,
+            onclick: (e) => withdraw(post, contribution, e.currentTarget),
+          },
           'Withdraw',
         )
-      } else {
-        control = el('input', {
-          type: 'checkbox',
-          'aria-label': `Contribute: ${text.slice(0, 80)}`,
-          checked: state.selected.has(post.uri),
-          onchange: (e) => {
-            if (e.target.checked) state.selected.add(post.uri)
-            else state.selected.delete(post.uri)
-            renderPosts()
-            update()
-          },
-        })
       }
-      return el(
-        'li',
-        { class: `post${state.selected.has(post.uri) ? ' selected' : ''}` },
-        control,
-        thumbFor(post),
-        el(
-          'div',
-          { class: 'meta' },
-          el('span', { class: 'text' }, text),
-          el('span', { class: 'date' }, date),
-          contribution
-            ? el('span', { class: 'state' }, contribution.consent ? ' · in ConsentVid' : ' · registered, no consent')
-            : null,
-        ),
+      const meta = el(
+        'div',
+        { class: 'meta' },
+        el('span', { class: 'text' }, text),
+        el('span', { class: 'date' }, date),
+        contribution
+          ? el('span', { class: 'state' }, contribution.consent ? 'in consentvid' : 'no consent attached')
+          : null,
       )
+      // A selectable post is one <label>: checkbox, thumbnail and text are a single target.
+      const body = contribution
+        ? el('div', { class: 'pick' }, thumbFor(post), meta)
+        : el(
+            'label',
+            { class: 'pick' },
+            el('input', {
+              type: 'checkbox',
+              'aria-label': `Contribute: ${text.slice(0, 80)}`,
+              checked: state.selected.has(post.uri),
+              onchange: (e) => {
+                if (e.target.checked) state.selected.add(post.uri)
+                else state.selected.delete(post.uri)
+                e.target.closest('li').classList.toggle('selected', e.target.checked)
+                update()
+              },
+            }),
+            thumbFor(post),
+            meta,
+          )
+      return el('li', { class: `post${state.selected.has(post.uri) ? ' selected' : ''}` }, body, withdrawBtn)
     }),
   )
   $('posts-empty').hidden = state.posts.length > 0
@@ -391,26 +385,33 @@ function renderOthers() {
     ...state.others.map((entry) => {
       const v = entry.video.value || {}
       const kind = (v.storage && v.storage.$type ? v.storage.$type.split('#')[1] : '') || ''
+      const withdrawBtn = el(
+          'button',
+          {
+            class: 'btn danger small',
+            type: 'button',
+            'aria-label': `Withdraw: ${(v.title || '(untitled)').slice(0, 80)}`,
+            onclick: (e) => withdrawOther(entry, e.currentTarget),
+          },
+          'Withdraw',
+        )
+      const status = `${kind === 'pdsBlobRef' ? 'uploaded, ' : ''}${entry.consent ? 'in consentvid' : 'no consent attached'}`
       return el(
         'li',
         { class: 'post' },
         el(
-          'button',
-          { class: 'btn danger small', type: 'button', onclick: (e) => withdrawOther(entry, e.currentTarget) },
-          'Withdraw',
-        ),
-        el('div', { class: 'thumb', 'aria-hidden': 'true' }),
-        el(
           'div',
-          { class: 'meta' },
-          el('span', { class: 'text' }, v.title || '(untitled)'),
-          el('span', { class: 'date' }, (v.createdAt || '').slice(0, 10)),
+          { class: 'pick' },
+          el('div', { class: 'thumb', 'aria-hidden': 'true' }),
           el(
-            'span',
-            { class: 'state' },
-            `${kind === 'pdsBlobRef' ? ' · uploaded' : ''}${entry.consent ? ' · in ConsentVid' : ' · registered, no consent'}`,
+            'div',
+            { class: 'meta' },
+            el('span', { class: 'text' }, v.title || '(untitled)'),
+            el('span', { class: 'date' }, (v.createdAt || '').slice(0, 10)),
+            el('span', { class: 'state' }, status),
           ),
         ),
+        withdrawBtn,
       )
     }),
   )
@@ -443,11 +444,27 @@ function addFiles(files) {
   update()
 }
 
+function removeFile(f) {
+  const i = state.files.indexOf(f)
+  state.files = state.files.filter((x) => x !== f)
+  renderFiles()
+  update()
+  // Focus goes to the next row's Remove button (or the previous one), else to the file picker.
+  const buttons = [...$('files').querySelectorAll('.file > .btn')]
+  const next = buttons[Math.min(i, buttons.length - 1)]
+  if (next) next.focus()
+  else $('file').focus()
+}
+
+function fileStatus(f) {
+  return el('span', { class: 'status', role: 'status' }, f.status)
+}
+
 function renderFiles() {
   const list = $('files')
   list.replaceChildren(
-    ...state.files.map((f) =>
-      el(
+    ...state.files.map((f) => {
+      f.row = el(
         'li',
         { class: `file${f.bad ? ' bad' : ''}` },
         el('div', { class: 'meta' },
@@ -468,29 +485,31 @@ function renderFiles() {
                     update()
                   },
                 })),
-          f.status ? el('span', { class: 'status', role: 'status' }, f.status) : null,
+          f.status ? fileStatus(f) : null,
           f.busy ? el('progress', { 'aria-label': `Working on ${f.file.name}` }) : null,
         ),
-        f.busy
-          ? null
-          : el('button', {
-              class: 'btn ghost small',
-              type: 'button',
-              onclick: () => {
-                state.files = state.files.filter((x) => x !== f)
-                renderFiles()
-                update()
-              },
-            }, 'Remove'),
-      ),
-    ),
+        el('button', { class: 'btn ghost small', type: 'button', hidden: f.busy, onclick: () => removeFile(f) }, 'Remove'),
+      )
+      return f.row
+    }),
   )
 }
 
+// Updates one row in place, so a title being typed elsewhere is never destroyed.
 function setFile(f, status, busy = false) {
   f.status = status
   f.busy = busy
-  renderFiles()
+  const row = f.row
+  if (!row || !row.isConnected) return renderFiles()
+  const meta = row.querySelector('.meta')
+  const old = meta.querySelector('.status')
+  if (status && old) old.textContent = status
+  else if (status) meta.querySelector('progress') ? meta.querySelector('progress').before(fileStatus(f)) : meta.append(fileStatus(f))
+  else if (old) old.remove()
+  const bar = meta.querySelector('progress')
+  if (busy && !bar) meta.append(el('progress', { 'aria-label': `Working on ${f.file.name}` }))
+  if (!busy && bar) bar.remove()
+  row.querySelector(':scope > .btn').hidden = busy
 }
 
 function readyFiles() {
@@ -523,11 +542,6 @@ function readVideoDetails() {
   }
 }
 
-function listWords(field, values) {
-  const words = values.map((v) => (LABELS[field][v] || v).toLowerCase())
-  return words.length <= 1 ? words.join('') : `${words.slice(0, -1).join(', ')} and ${words.at(-1)}`
-}
-
 function update() {
   const terms = readTerms()
   const details = readVideoDetails()
@@ -540,23 +554,7 @@ function update() {
   const n = state.selected.size + files.length
   const summary = $('summary')
   if (n && terms.modalities.length && terms.purposes.length && terms.modelClasses.length && terms.peoplePresent) {
-    const expiry = terms.expiresAt ? `until ${terms.expiresAt.slice(0, 10)}` : 'until you withdraw it'
-    summary.replaceChildren(
-      el(
-        'p',
-        {},
-        `You consent, for ${n} video${n > 1 ? 's' : ''}, that ${listWords('modalities', terms.modalities)} may be used for ` +
-          `${listWords('purposes', terms.purposes)} by ${listWords('modelClasses', terms.modelClasses)}, ${expiry}.`,
-      ),
-      el('p', {}, `Who appears: ${LABELS.peoplePresent[terms.peoplePresent].toLowerCase()}.`),
-      el(
-        'p',
-        {},
-        'Anything you did not tick is not granted. You can withdraw on this page at any time: withdrawing (or ' +
-          'deleting the post on Bluesky) removes the video from every dataset, and an uploaded file is deleted from ' +
-          'your server.',
-      ),
-    )
+    summary.replaceChildren(...summaryLines(terms, n).map((line) => el('p', {}, line)))
   } else {
     summary.textContent = 'Choose at least one video and your terms.'
   }
@@ -564,6 +562,11 @@ function update() {
   list.replaceChildren(...errors.map((e) => el('li', {}, e)))
   list.hidden = errors.length === 0
   $('sign').disabled = errors.length > 0
+  const step = errors.length === 0 ? 4 : n ? 3 : 2
+  for (const li of document.querySelectorAll('.rail li')) {
+    if (li.classList.contains(`r${step}`)) li.setAttribute('aria-current', 'step')
+    else li.removeAttribute('aria-current')
+  }
 }
 
 // -------------------------------------------------------------- actions ----
@@ -604,7 +607,8 @@ async function contributeOne(post, terms, details) {
     $('keep-metadata-row').hidden = false
     throw new Error(
       `the video carries identifying metadata (${found.join(', ')}). It can't be removed without changing the ` +
-        'post: delete it and post a stripped copy, or tick “include anyway”.',
+        'post. Delete the post and post a cleaned copy, use “Upload from my computer” instead (it cleans the file), ' +
+        'or tick “include anyway”.',
     )
   }
   const measured = await probe(bytes, post.blob.mimeType)
@@ -659,7 +663,7 @@ async function uploadBlob(bytes, mimeType) {
   const out = await res.json()
   const b = out && out.blob
   const cid = b && b.ref && b.ref.$link
-  if (!cid || !Number.isInteger(b.size)) throw new Error('your server answered the upload without a blob reference')
+  if (!cid || !Number.isInteger(b.size)) throw new Error('your server accepted the upload but did not confirm the stored file')
   return { cid, mimeType: b.mimeType, size: b.size }
 }
 
@@ -695,7 +699,7 @@ async function contributeFile(f, terms, details) {
     throw new Error(`the file still carries identifying metadata (${found.join(', ')}); tick “include anyway” to upload it`)
   }
   const measured = await probe(bytes, mime)
-  if (original.width && !measured.width) throw new Error('the cleaned file no longer plays; nothing was uploaded')
+  if (original.width && !measured.width) throw new Error("the browser can no longer read the cleaned file's video dimensions; nothing was uploaded")
   const cid = await rawCid(bytes)
   setFile(f, `Uploading ${mb(bytes.length)} to your server…`, true)
   const blob = await uploadBlob(bytes, mime)
@@ -732,6 +736,7 @@ async function withdrawOther(entry, button) {
   if (button.dataset.confirm !== 'yes') {
     button.dataset.confirm = 'yes'
     button.textContent = 'Confirm withdraw'
+    button.setAttribute('aria-label', button.getAttribute('aria-label').replace(/^Withdraw/, 'Confirm withdraw'))
     return
   }
   button.disabled = true
@@ -740,8 +745,13 @@ async function withdrawOther(entry, button) {
       body: withdrawBody(state.did, entry.rkey, { consentExists: Boolean(entry.consent) }),
     })
     state.others = state.others.filter((x) => x !== entry)
-    log('Consent withdrawn: the video is out of ConsentVid, and your server deletes an uploaded file.', 'ok')
+    const msg =
+      'Consent withdrawn: the records were deleted, and your server then frees an uploaded file. Datasets that ' +
+      're-check consent drop the video; copies made before may persist.'
+    notice(msg, 'ok')
+    log(msg, 'ok')
   } catch (e) {
+    notice(`Withdrawing failed — ${e.message}`, 'error')
     log(`Withdrawing failed — ${e.message}`, 'bad')
   }
   renderOthers()
@@ -780,6 +790,7 @@ async function withdraw(post, contribution, button) {
   if (button.dataset.confirm !== 'yes') {
     button.dataset.confirm = 'yes'
     button.textContent = 'Confirm withdraw'
+    button.setAttribute('aria-label', button.getAttribute('aria-label').replace(/^Withdraw/, 'Confirm withdraw'))
     return
   }
   button.disabled = true
@@ -788,8 +799,15 @@ async function withdraw(post, contribution, button) {
       body: withdrawBody(state.did, contribution.rkey, { consentExists: Boolean(contribution.consent) }),
     })
     state.contributions.delete(post.uri)
-    log('Consent withdrawn: the video is out of ConsentVid. Datasets drop it at their next re-sync.', 'ok')
+    // Only the consentvid records are deleted (withdrawBody); the post is untouched.
+    const deleted = contribution.consent ? 'both consentvid records were deleted' : 'the consentvid video record was deleted'
+    const msg =
+      `Consent withdrawn: ${deleted}; your Bluesky post is unchanged. Datasets that re-check consent drop the ` +
+      'video; copies made before may persist.'
+    notice(msg, 'ok')
+    log(msg, 'ok')
   } catch (e) {
+    notice(`Withdrawing failed — ${e.message}`, 'error')
     log(`Withdrawing failed — ${e.message}`, 'bad')
   }
   renderPosts()
@@ -846,8 +864,19 @@ async function main() {
 
   state.session = result.session
   state.did = result.session.did
+  // The header shows the handle; the DID is the fallback until the lookup answers, and stays as the tooltip.
   $('who').textContent = state.did
+  $('who').title = state.did
   $('who').hidden = false
+  xrpc('com.atproto.repo.describeRepo', { params: { repo: state.did } })
+    .then((res) => res.json())
+    .then((repo) => {
+      if (repo && typeof repo.handle === 'string' && repo.handle && repo.handle !== 'handle.invalid') {
+        $('who').textContent = `@${repo.handle}`
+        $('who').classList.remove('mono')
+      }
+    })
+    .catch(() => {})
   $('signout').hidden = false
   $('signout').addEventListener('click', async () => {
     try {
@@ -878,15 +907,17 @@ async function main() {
   renderOthers()
   renderFiles()
   $('contribute').hidden = false
-  for (const tab of document.querySelectorAll('[role="tab"]')) {
+  for (const tab of [$('tab-posts'), $('tab-upload')]) {
     tab.addEventListener('click', () => {
-      for (const t of document.querySelectorAll('[role="tab"]')) {
+      for (const t of [$('tab-posts'), $('tab-upload')]) {
         const on = t === tab
-        t.setAttribute('aria-selected', String(on))
+        t.setAttribute('aria-pressed', String(on))
         $(t.getAttribute('aria-controls')).hidden = !on
       }
     })
   }
+  // Below 900px the per-video record cards fold away under the summary.
+  if (matchMedia('(max-width: 899px)').matches) $('sum-side').open = false
   $('file').addEventListener('change', (e) => {
     addFiles([...e.target.files])
     e.target.value = ''
@@ -917,4 +948,4 @@ async function main() {
   update()
 }
 
-main().catch((e) => notice(`Something went wrong: ${e.message}`, 'error'))
+main().catch((e) => notice(`This page could not start (${e.message}). Reload to try again.`, 'error'))

@@ -70,7 +70,7 @@ consentvid contribute --from-post https://bsky.app/profile/you.bsky.social/post/
 Nothing is re-uploaded: the video record points at your post
 (`#bskyPostRef`) and its bytes are the video blob your PDS already serves
 (`com.atproto.sync.getBlob`). They stay tied to the post: **delete the post on
-Bluesky and the clip leaves every dataset** (readers report it
+Bluesky and readers that re-check drop the clip** (they report it
 `unavailable`), or withdraw the consent in the app or with `consentvid
 revoke`. Only your own posts can be registered (readers reject a post in
 another repo). Both the app and the CLI download the video once to check it
@@ -96,7 +96,7 @@ MP4, use the CLI (ffmpeg strips them), or tick "include anyway". The file is
 then uploaded as a blob to **your own** PDS (`com.atproto.repo.uploadBlob`;
 nothing is posted) and referenced by the video record (`#pdsBlobRef`) in the
 same one-commit write as its consent. Withdrawing deletes the record, and the
-PDS deletes the blob. From the CLI: `consentvid contribute clip.mp4 --title
+PDS then frees the blob. From the CLI: `consentvid contribute clip.mp4 --title
 "…" --storage-kind pds …` (ffmpeg strips it first).
 
 `login` finds your PDS from your handle (handle → DID → DID document → PDS
@@ -281,7 +281,7 @@ consentvid appview export ds.json --purpose training --model-class academic
 # BEFORE EVERY USE: verify every clip, write a cleaned manifest
 consentvid resync ds.json --write ds.clean.json
 consentvid resync ds.json --check             # exit 1 if anything must be dropped (CI)
-consentvid verify at://did:plc:…/org.consentvid.consent/…   # inspect one record
+consentvid verify at://did:plc:…/org.consentvid.consentV2/…   # inspect one record
 ```
 
 `resync` checks each clip against the contributor's own PDS using
@@ -362,7 +362,7 @@ each `cr:FileObject` carries a `cv:consentReceipt` with the receipt's AT-URI,
 ### Provenance inside the file (C2PA)
 
 ```bash
-consentvid embed-c2pa clip.mp4 --consent at://…/org.consentvid.consent/…   # needs [c2pa]
+consentvid embed-c2pa clip.mp4 --consent at://…/org.consentvid.consentV2/…   # needs [c2pa]
 consentvid read-c2pa clip.c2pa.mp4
 consentvid resync clip.c2pa.mp4      # checks the consent the file points at
 ```
@@ -573,6 +573,21 @@ on the server.
   deleting or deactivating your ATproto account.
 - **DNS rebinding:** host names are checked against private address ranges
   when resolved, but a name could resolve differently by the time we connect.
+
+## Next step: a labeler service
+
+Planned, not built. An ATproto labeler is a separate account that publishes
+signed labels about records. ConsentVid would run one so that a person who
+appears in a clip, or a rights holder, can dispute it, for example with labels
+such as `disputed-bystander` or `disputed-rights` (example values). `resync`
+and `export` would then drop labelled clips, as they already drop clips with
+the contributor's own content labels. The contributor's consent record is not
+changed.
+
+Reviewing disputes needs people (moderators) and a written review policy, so
+this depends on funding. Until then, a dispute can be sent by email to
+evangelos.kazakos@cvut.cz; it cannot remove a record from someone else's
+account.
 
 ## Lexicons
 

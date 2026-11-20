@@ -1,6 +1,6 @@
 {
   "client_id": "https://consentvid.org/app/client-metadata.json",
-  "client_name": "ConsentVid",
+  "client_name": "consentvid",
   "client_uri": "https://consentvid.org",
   "logo_uri": "https://consentvid.org/app/logo.svg",
   "tos_uri": "https://consentvid.org/license.html",
