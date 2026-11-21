@@ -1,14 +1,20 @@
 Fonts used by these pages. All are licensed under the SIL Open Font License 1.1 (see the OFL-*.txt files here).
 
+Jersey25.woff2
+  Jersey 25, by Sarah Cadigan-Fried (The Soft Type Project). Source: https://github.com/scfried/soft-type-jersey
+  Latin subset as packaged by Fontsource (@fontsource/jersey-25), unmodified. Headings and the wordmark.
+DepartureMono.woff2
+  Departure Mono, by Helena Zhang. Source: https://github.com/rektdeckard/departure-mono
+  Code, paths and record names.
 Besley-VF.woff2
-  Besley, by Owen Earl (indestructible type*). Source: https://github.com/indestructible-type/Besley  fonts/webfonts/Besley[wdth,wght].woff2
+  Fallback for Jersey 25. Besley, by Owen Earl (indestructible type*). Source: https://github.com/indestructible-type/Besley  fonts/webfonts/Besley[wdth,wght].woff2
   Subset to Latin (plus Czech accents, arrows and a few symbols) and converted to WOFF2 with fontTools.
 IBMPlexSans-{400-normal,400-italic,600-normal,700-normal}-{latin,latin-ext}.woff2
   IBM Plex Sans, by Mike Abbink with Bold Monday, for IBM. Source: https://github.com/IBM/plex
   WOFF2 subsets as packaged by Fontsource (@fontsource/ibm-plex-sans 5.3.0), unmodified: the Latin and
   Latin Extended subsets of the 400, 400 italic, 600 and 700 styles.
 Recursive-MonoCasual.woff2
-  Recursive, by Arrow Type (Stephen Nixon). Source: https://github.com/arrowtype/recursive  release v1.085,
+  Fallback for Departure Mono. Recursive, by Arrow Type (Stephen Nixon). Source: https://github.com/arrowtype/recursive  release v1.085,
   Recursive_Desktop/Recursive_VF_1.085.ttf (sha256 653221ca467f4732fe6856ac493f6c409e9f56a7674abe36b2364acc89796f7c).
   Instanced with fontTools.varLib.instancer to MONO=1, slnt=0, CRSV=0, wght 400-700 (CASL axis kept),
   then subset to the same character set as Besley plus ≠ ✓ ← ↑ → ↓ × · • – — − ‘ ’ “ ” …

@@ -368,3 +368,13 @@ select { appearance: none; -webkit-appearance: none; padding-right: 36px; backgr
   .pick > .thumb::after { --c: CanvasText; }
   progress { forced-color-adjust: none; }
 }
+
+/* Theme (Sierra x Arcade): the colour and type tokens in use. These override the
+   defaults above; Besley and Recursive remain as fallbacks for missing glyphs. */
+@font-face { font-family: "Jersey 25"; src: url(../fonts/Jersey25.woff2) format("woff2"); font-weight: 400 900; size-adjust: 132%; font-display: swap; }
+@font-face { font-family: "Departure Mono"; src: url(../fonts/DepartureMono.woff2) format("woff2"); font-weight: 400 700; size-adjust: 100%; font-display: swap; }
+:root { --bone: #FFF3D6; --paper: #FFF8E5; --sunk: #F7E7C5; --bone-f: #FFF8E6; --on-band-2: #FFF8E6; --ink-2: #47341F; --ink: #25140B; --ink-f: #25140B; --press-c: #25140B; --clay: #BF4416; --clay-hi: #AE390A; --ochre: #FFC233; --ochre-2: #855F07; --celadon: #7FE0D0; --celadon-2: #097160; --cobalt: #2238C8; --cobalt-hover: #3D50D7; --cobalt-t: #2034BB; --edge: #25140B; --serif: "Jersey 25", "Besley", Georgia, serif; --sans: "Plex", "Plex", Arial, sans-serif; --mono: "Departure Mono", "Rec", ui-monospace, Menlo, monospace; --w-display: 100%; --w-head: 100%; }
+@media (prefers-color-scheme: dark) { :root { --bone: #1A1308; --paper: #251A0B; --sunk: #2F210E; --ink-2: #DBC8AA; --ink: #F8E6D6; --press-c: #000000; --clay: #682306; --clay-hi: #FF965D; --ochre: #5F4B1B; --ochre-2: #FFC233; --celadon: #1C5F54; --celadon-2: #7FE0D0; --cobalt: #394EE0; --cobalt-hover: #3349D5; --cobalt-t: #A9B4FD; --edge: #A9B4FD; } }
+html { font-synthesis: none; }
+h1, h2, h3 { letter-spacing: 0 !important; }
+.wordmark { text-transform: lowercase; }
