@@ -10,7 +10,7 @@
     "vectors": "node scripts/vectors.mjs"
   },
   "dependencies": {
-    "@atproto/oauth-client-browser": "0.5.14",
+    "@atproto/oauth-client-browser": "0.5.15",
     "@ipld/dag-cbor": "10.0.2",
     "multiformats": "14.0.5"
   },
