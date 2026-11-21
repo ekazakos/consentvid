@@ -69,7 +69,7 @@ const bytes = (s) => enc.encode(s).length
 export function buildReply(appUrl, videoUri) {
   const app = new URL(appUrl)
   const parts = [
-    { text: 'Hi! 🎬 Want this video in an open, consent-first video dataset? You can give consent (and withdraw it any time) here: ' },
+    { text: 'Hi! 🎬 Want to make this video available for ML research, on your own terms? You can give consent (and withdraw it any time) here: ' },
     { text: app.host + app.pathname.replace(/\/$/, ''), link: consentLink(appUrl, videoUri) },
     { text: '\n\nYour consent is a record in your own Bluesky account. I’m a bot and only reply when tagged or mentioned. About: ' },
     { text: app.host, link: app.origin },

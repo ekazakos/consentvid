@@ -186,8 +186,8 @@ async function signIn(handle, scope = SCOPE) {
       // The user decides: never widen the permission silently.
       notice(
         'Your server does not support fine-grained permissions yet. You can sign in with its broader permission ' +
-          '(atproto transition:generic) instead. That permission would technically let an app post, follow or ' +
-          "delete on your behalf; this page's code writes only org.consentvid.* records.",
+          '(atproto transition:generic) instead. It covers more than this page needs, including posting, following ' +
+          'and deleting. This page only adds and removes its own org.consentvid.* records.',
       )
       $('notice').append(
         ' ',

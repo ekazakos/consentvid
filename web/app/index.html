@@ -74,8 +74,8 @@
         <summary id="scope-h">The exact permission</summary>
         <pre class="scope" aria-labelledby="scope-h"><code><span class="sc">atproto</span><span class="sp"> </span><span class="sc">repo:org.consentvid.videoV2<wbr>?action=create<wbr>&amp;action=delete</span><span class="sp"> </span><span class="sc">repo:org.consentvid.consentV2<wbr>?action=create<wbr>&amp;action=delete</span><span class="sp"> </span><span class="sc">blob:video/*</span></code></pre>
         <p class="small">If your server cannot grant these, the page asks you first before requesting the broader
-          <span class="mono">atproto transition:generic</span>, which would let an app post, follow or delete for you.
-          This page writes only <span class="mono">org.consentvid.*</span> records
+          <span class="mono">atproto transition:generic</span>, which covers more than this page needs, including
+          posting, following and deleting. This page writes only <span class="mono">org.consentvid.*</span> records
           (<a href="https://github.com/ekazakos/consentvid/blob/main/app/src/scopes.js">app/src/scopes.js</a>).</p>
       </details>
     </section>

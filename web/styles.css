@@ -502,7 +502,7 @@ mark.hl-cid { outline: 1.5px solid var(--cobalt-t); outline-offset: 1px; }
 .mf.ghost .mf-img { border: 1.5px dashed var(--ink-2); }
 .mf-l { font: 400 var(--t-caption)/1.25 var(--sans); color: var(--ink-2); min-width: 0; }
 .mf.ok .mf-l { color: var(--celadon-2); font-weight: 700; }
-.mf-st { display: block; font: 700 13.5px/1.3 var(--mono); color: var(--clay-hi); }
+.mf-st { display: block; font: 700 14px/1.3 var(--mono); color: var(--clay-hi); }
 .mf-cmd { margin: 14px 0 14px 170px; font-size: var(--t-caption); display: flex; align-items: center; gap: 10px; }
 .mf-cmd::before { content: "↓" / ""; font: 600 var(--t-lede)/1 var(--sans); color: var(--ink-2); }
 .mf-cmd b { color: var(--clay-hi); }
