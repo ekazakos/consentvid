@@ -12,7 +12,7 @@
   "dependencies": {
     "@atproto/oauth-client-browser": "0.5.14",
     "@ipld/dag-cbor": "10.0.2",
-    "multiformats": "14.0.5"
+    "multiformats": "14.0.7"
   },
   "devDependencies": {
     "esbuild": "0.28.2"
